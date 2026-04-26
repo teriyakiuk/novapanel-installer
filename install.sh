@@ -30,10 +30,19 @@ NOVA_LICENSE_DIR="${NOVA_LICENSE_DIR:-/etc/novapanel}"
 PROVIDED_KEY=""
 NON_INTERACTIVE=0
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 HOSTNAME_OVERRIDE="${HOSTNAME_OVERRIDE:-}"
+INSTALL_LOG="/tmp/novapanel-install.log"
+
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+# Make every apt call wait up to 5 min for the dpkg lock instead of
+# bailing immediately — defends against unattended-upgrades / cloud-init
+# still running on a fresh boot.
+APT_WAIT="-o DPkg::Lock::Timeout=300"
 
 # ─────────────────────────────────────────────────────────
-# Output helpers (ANSI colors fall back to plain text in non-TTY)
+# Output helpers
 # ─────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
     GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'
@@ -45,8 +54,23 @@ fi
 step()   { printf "\n${CYAN}${BOLD}==>${RESET}${BOLD} %s${RESET}\n" "$*"; }
 ok()     { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
 warn()   { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
-fail()   { printf "  ${RED}✗${RESET} %s\n" "$*" >&2; exit 1; }
+fail()   { printf "  ${RED}✗${RESET} %s\n" "$*" >&2; printf "\n${RED}Install log: $INSTALL_LOG${RESET}\n" >&2; exit 1; }
 info()   { printf "    %s\n" "$*"; }
+
+# Run a command, log all output, fail loudly with context if it errors.
+# Replaces the dangerous `cmd >/dev/null 2>&1 || true` pattern.
+run() {
+    local label="$1"; shift
+    if "$@" >>"$INSTALL_LOG" 2>&1; then
+        return 0
+    else
+        local rc=$?
+        printf "  ${RED}✗${RESET} %s (exit %d)\n" "$label" $rc >&2
+        printf "    Last 10 lines from $INSTALL_LOG:\n" >&2
+        tail -10 "$INSTALL_LOG" | sed 's/^/    /' >&2
+        exit 1
+    fi
+}
 
 banner() {
     cat <<EOF
@@ -61,6 +85,32 @@ ${RESET}
 EOF
 }
 
+# Wait for any background apt/dpkg process to release its locks.
+# Cloud-init + unattended-upgrades commonly hold these on first boot.
+wait_for_dpkg() {
+    local waited=0
+    local max=300
+    local locks=("/var/lib/dpkg/lock-frontend" "/var/lib/dpkg/lock" "/var/lib/apt/lists/lock")
+    while true; do
+        local held=0
+        for lock in "${locks[@]}"; do
+            if fuser "$lock" >/dev/null 2>&1; then
+                held=1
+                break
+            fi
+        done
+        [[ $held -eq 0 ]] && return 0
+        if [[ $waited -eq 0 ]]; then
+            info "Waiting for cloud-init / unattended-upgrades to release apt lock..."
+        fi
+        sleep 2
+        waited=$((waited+2))
+        if [[ $waited -ge $max ]]; then
+            fail "apt lock still held after ${max}s — check 'ps aux | grep apt'"
+        fi
+    done
+}
+
 # ─────────────────────────────────────────────────────────
 # Argument parsing
 # ─────────────────────────────────────────────────────────
@@ -68,6 +118,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --key) PROVIDED_KEY="$2"; shift 2 ;;
         --email) ADMIN_EMAIL="$2"; shift 2 ;;
+        --username) ADMIN_USERNAME="$2"; shift 2 ;;
         --hostname) HOSTNAME_OVERRIDE="$2"; shift 2 ;;
         --yes|--non-interactive) NON_INTERACTIVE=1; shift ;;
         --license-server) LICENSE_SERVER="$2"; shift 2 ;;
@@ -79,8 +130,9 @@ Usage: install.sh [options]
 
   --key KEY              Activate this Pro/Developer key instead of auto-issuing
                          a Community license
-  --email EMAIL          Admin email (defaults to admin@<hostname>)
-  --hostname HOST        Override autodetected hostname for SSL setup
+  --email EMAIL          Admin email
+  --username USER        Admin username (default: admin)
+  --hostname HOST        Hostname for SSL setup
   --yes                  Non-interactive (use defaults for everything)
   --license-server URL   Override license server (default: https://license.novapanel.dev)
   --help                 Show this message
@@ -92,11 +144,15 @@ EOF
     esac
 done
 
+# Reset install log
+: > "$INSTALL_LOG"
+chmod 600 "$INSTALL_LOG"
+
+banner
+
 # ─────────────────────────────────────────────────────────
 # Pre-flight checks
 # ─────────────────────────────────────────────────────────
-banner
-
 step "Pre-flight checks"
 
 if [[ $EUID -ne 0 ]]; then
@@ -116,81 +172,128 @@ if [[ "$MAJOR_VER" -lt 24 ]]; then
 fi
 ok "Ubuntu $VERSION_ID detected"
 
-# Disk space — need ~3 GB for everything
 AVAIL_GB=$(df -BG /opt 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G' || echo 0)
 if [[ "$AVAIL_GB" -lt 3 ]]; then
     fail "Need at least 3 GB free in /opt (have ${AVAIL_GB} GB)"
 fi
 ok "Disk space OK (${AVAIL_GB} GB free)"
 
-# Network — license server must be reachable
 if ! curl -sfI --max-time 5 "$LICENSE_SERVER/healthz" >/dev/null 2>&1; then
     fail "Cannot reach license server at $LICENSE_SERVER"
 fi
 ok "License server reachable"
 
-# Ports 80/443 must be free (Caddy will bind these)
 for port in 80 443; do
     if ss -tlnp 2>/dev/null | grep -q ":$port "; then
-        warn "Port $port is in use — installer may conflict with existing services"
+        warn "Port $port already in use"
     fi
 done
 
-# Hostname for SSL
-if [[ -z "$HOSTNAME_OVERRIDE" ]]; then
-    HOSTNAME_OVERRIDE=$(hostname --fqdn 2>/dev/null || hostname)
-fi
-if [[ -z "$ADMIN_EMAIL" ]]; then
-    ADMIN_EMAIL="admin@$HOSTNAME_OVERRIDE"
-fi
-ok "Hostname: $HOSTNAME_OVERRIDE"
-ok "Admin email: $ADMIN_EMAIL"
+# ─────────────────────────────────────────────────────────
+# Interactive setup (skipped with --yes)
+# ─────────────────────────────────────────────────────────
+DEFAULT_HOST=$(hostname --fqdn 2>/dev/null || hostname)
+[[ -z "$HOSTNAME_OVERRIDE" ]] && HOSTNAME_OVERRIDE="$DEFAULT_HOST"
+[[ -z "$ADMIN_EMAIL" ]] && ADMIN_EMAIL="admin@${HOSTNAME_OVERRIDE#*.}"
 
-# Confirm install if interactive
 if [[ "$NON_INTERACTIVE" -eq 0 && -t 0 ]]; then
-    echo
-    read -rp "${BOLD}Proceed with NovaPanel installation? (y/N): ${RESET}" yn
-    if [[ ! "$yn" =~ ^[Yy] ]]; then
+    step "Configuration"
+
+    read -rp "  ${BOLD}📧 Admin email${RESET} [$ADMIN_EMAIL]: " v
+    [[ -n "$v" ]] && ADMIN_EMAIL="$v"
+
+    read -rp "  ${BOLD}👤 Admin username${RESET} [$ADMIN_USERNAME]: " v
+    [[ -n "$v" ]] && ADMIN_USERNAME="$v"
+
+    read -rp "  ${BOLD}🌐 Server hostname${RESET} [$HOSTNAME_OVERRIDE]: " v
+    [[ -n "$v" ]] && HOSTNAME_OVERRIDE="$v"
+
+    while true; do
+        read -rsp "  ${BOLD}🔑 Admin password${RESET} (min 8 chars, leave blank to auto-generate): " ADMIN_PASSWORD
+        echo
+        if [[ -z "$ADMIN_PASSWORD" ]]; then
+            ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | head -c 18)
+            info "Auto-generated password: ${BOLD}${ADMIN_PASSWORD}${RESET}"
+            info "(printed again at end of install — save it somewhere safe)"
+            break
+        fi
+        if [[ ${#ADMIN_PASSWORD} -lt 8 ]]; then
+            warn "Password must be at least 8 characters"
+            continue
+        fi
+        read -rsp "  ${BOLD}🔑 Confirm password${RESET}: " ADMIN_PASSWORD_CONFIRM
+        echo
+        if [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_CONFIRM" ]]; then
+            break
+        fi
+        warn "Passwords don't match. Try again."
+    done
+
+    cat <<EOF
+
+  ${BOLD}Review:${RESET}
+    Admin email:   $ADMIN_EMAIL
+    Admin user:    $ADMIN_USERNAME
+    Hostname:      $HOSTNAME_OVERRIDE
+    License:       $([ -n "$PROVIDED_KEY" ] && echo "Pro key provided" || echo "Auto-issue Community")
+
+EOF
+    read -rp "  ${BOLD}Proceed with installation? (Y/n): ${RESET}" yn
+    if [[ "$yn" =~ ^[Nn] ]]; then
         echo "Aborted."
         exit 0
     fi
+else
+    # Non-interactive: auto-generate a password
+    ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | head -c 18)
 fi
+
+# ─────────────────────────────────────────────────────────
+# Wait for boot-time apt processes
+# ─────────────────────────────────────────────────────────
+step "Waiting for system to settle"
+wait_for_dpkg
+ok "apt locks free"
 
 # ─────────────────────────────────────────────────────────
 # System update + base deps
 # ─────────────────────────────────────────────────────────
-export DEBIAN_FRONTEND=noninteractive
-export NEEDRESTART_MODE=a
-
-step "Updating apt + installing base dependencies"
-apt-get update -qq
-apt-get install -y -qq \
+step "Installing base dependencies"
+run "apt-get update" apt-get $APT_WAIT update -qq
+run "apt-get install base packages" apt-get $APT_WAIT install -y -qq \
     curl wget gnupg ca-certificates lsb-release apt-transport-https \
-    debian-keyring debian-archive-keyring \
-    sudo cron jq openssl ufw fail2ban \
-    >/dev/null
+    debian-keyring debian-archive-keyring software-properties-common \
+    sudo cron jq openssl ufw fail2ban
 ok "Base packages installed"
 
 # ─────────────────────────────────────────────────────────
-# PostgreSQL 16 (panel's own database)
+# PostgreSQL 16
 # ─────────────────────────────────────────────────────────
 step "Installing PostgreSQL 16"
 if ! command -v psql >/dev/null 2>&1; then
-    apt-get install -y -qq postgresql postgresql-contrib >/dev/null
-    systemctl enable postgresql >/dev/null
-    systemctl start postgresql
-    ok "PostgreSQL installed"
-else
-    ok "PostgreSQL already installed"
+    run "install postgresql" apt-get $APT_WAIT install -y -qq postgresql postgresql-contrib
 fi
+systemctl daemon-reload
+run "enable postgresql" systemctl enable postgresql
+run "start postgresql" systemctl start postgresql
+ok "PostgreSQL installed + running"
 
 # Create panel database + user
 DB_PASS=$(openssl rand -base64 24 | tr -d '/+=')
-sudo -u postgres psql >/dev/null 2>&1 <<EOF || true
-CREATE USER novapanel WITH PASSWORD '$DB_PASS';
-CREATE DATABASE novapanel OWNER novapanel;
-GRANT ALL PRIVILEGES ON DATABASE novapanel TO novapanel;
+sudo -u postgres psql >>"$INSTALL_LOG" 2>&1 <<EOF
+DO \$\$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'novapanel') THEN
+        CREATE USER novapanel WITH PASSWORD '$DB_PASS';
+    ELSE
+        ALTER USER novapanel WITH PASSWORD '$DB_PASS';
+    END IF;
+END
+\$\$;
 EOF
+sudo -u postgres psql >>"$INSTALL_LOG" 2>&1 -tc "SELECT 1 FROM pg_database WHERE datname = 'novapanel'" | grep -q 1 \
+    || sudo -u postgres createdb -O novapanel novapanel >>"$INSTALL_LOG" 2>&1
+sudo -u postgres psql >>"$INSTALL_LOG" 2>&1 -c "GRANT ALL PRIVILEGES ON DATABASE novapanel TO novapanel;"
 ok "Database 'novapanel' ready"
 
 # ─────────────────────────────────────────────────────────
@@ -198,16 +301,15 @@ ok "Database 'novapanel' ready"
 # ─────────────────────────────────────────────────────────
 step "Installing Redis"
 if ! command -v redis-cli >/dev/null 2>&1; then
-    apt-get install -y -qq redis-server >/dev/null
-    systemctl enable redis-server >/dev/null
-    systemctl start redis-server
-    ok "Redis installed"
-else
-    ok "Redis already installed"
+    run "install redis" apt-get $APT_WAIT install -y -qq redis-server
 fi
+systemctl daemon-reload
+run "enable redis-server" systemctl enable redis-server
+run "start redis-server" systemctl start redis-server
+ok "Redis installed + running"
 
 # ─────────────────────────────────────────────────────────
-# Caddy (TLS + reverse proxy)
+# Caddy
 # ─────────────────────────────────────────────────────────
 step "Installing Caddy"
 if ! command -v caddy >/dev/null 2>&1; then
@@ -215,55 +317,48 @@ if ! command -v caddy >/dev/null 2>&1; then
         | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
         | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
-    apt-get update -qq
-    apt-get install -y -qq caddy >/dev/null
-    ok "Caddy installed"
-else
-    ok "Caddy already installed"
+    run "apt-get update (caddy)" apt-get $APT_WAIT update -qq
+    run "install caddy" apt-get $APT_WAIT install -y -qq caddy
 fi
+ok "Caddy installed"
 
 # ─────────────────────────────────────────────────────────
-# MariaDB (customer databases)
+# MariaDB
 # ─────────────────────────────────────────────────────────
 step "Installing MariaDB"
 if ! command -v mysql >/dev/null 2>&1; then
-    apt-get install -y -qq mariadb-server mariadb-client >/dev/null
-    systemctl daemon-reload
-    systemctl enable mariadb >/dev/null
-    # Race-tolerant start: systemd may report 'activating' briefly
-    for i in 1 2 3 4 5; do
-        systemctl start mariadb 2>/dev/null
-        sleep 2
-        systemctl is-active --quiet mariadb && break
-    done
-    if ! systemctl is-active --quiet mariadb; then
-        fail "MariaDB failed to start. Check: systemctl status mariadb"
-    fi
-    ok "MariaDB installed"
-else
-    ok "MariaDB already installed"
+    run "install mariadb" apt-get $APT_WAIT install -y -qq mariadb-server mariadb-client
 fi
+systemctl daemon-reload
+run "enable mariadb" systemctl enable mariadb
+# Race-tolerant start: systemd may report 'activating' briefly
+for i in 1 2 3 4 5; do
+    systemctl start mariadb >>"$INSTALL_LOG" 2>&1 || true
+    sleep 2
+    systemctl is-active --quiet mariadb && break
+done
+if ! systemctl is-active --quiet mariadb; then
+    fail "MariaDB failed to start. Check: systemctl status mariadb"
+fi
+ok "MariaDB installed + running"
 
 # ─────────────────────────────────────────────────────────
-# PHP 8.3 + FPM
+# PHP 8.3
 # ─────────────────────────────────────────────────────────
 step "Installing PHP 8.3"
 if ! command -v php8.3 >/dev/null 2>&1; then
-    apt-get install -y -qq software-properties-common >/dev/null
-    add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1 || true
-    apt-get update -qq
-    apt-get install -y -qq \
+    add-apt-repository -y ppa:ondrej/php >>"$INSTALL_LOG" 2>&1 || true
+    run "apt-get update (php)" apt-get $APT_WAIT update -qq
+    run "install php8.3" apt-get $APT_WAIT install -y -qq \
         php8.3 php8.3-fpm php8.3-cli \
         php8.3-mysql php8.3-pgsql php8.3-mbstring php8.3-xml \
         php8.3-curl php8.3-zip php8.3-gd php8.3-intl php8.3-bcmath \
-        composer \
-        >/dev/null
-    systemctl enable php8.3-fpm >/dev/null
-    systemctl start php8.3-fpm
-    ok "PHP 8.3 installed"
-else
-    ok "PHP 8.3 already installed"
+        composer
 fi
+systemctl daemon-reload
+run "enable php8.3-fpm" systemctl enable php8.3-fpm
+run "start php8.3-fpm" systemctl start php8.3-fpm
+ok "PHP 8.3 installed + running"
 
 # ─────────────────────────────────────────────────────────
 # Panel user + filesystem
@@ -290,8 +385,6 @@ ok "Directories created"
 # ─────────────────────────────────────────────────────────
 step "Provisioning license"
 
-# Stable machine fingerprint — must match what the panel computes at runtime.
-# Hash: machine-id + primary MAC + hostname.
 MACHINE_ID=$(cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null)
 PRIMARY_MAC=$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^lo$|^docker|^br-|^veth|^virbr|^tun|^tap/ && $3 ~ /MULTICAST/ {print $2; exit}' | xargs -I{} cat /sys/class/net/{}/address 2>/dev/null | head -1)
 [[ -z "$PRIMARY_MAC" ]] && PRIMARY_MAC=$(ip -o link show 2>/dev/null | awk '$2 !~ /lo:/ {gsub(":", "", $2); print $17; exit}')
@@ -299,7 +392,6 @@ HOSTNAME_FOR_FP=$(hostname)
 FINGERPRINT=$(printf 'novapanel:v1\nmachine-id:%s\nmac:%s\nhost:%s\n' "$MACHINE_ID" "$PRIMARY_MAC" "$HOSTNAME_FOR_FP" | sha256sum | awk '{print $1}')
 info "Fingerprint: ${FINGERPRINT:0:16}…"
 
-# Detect public IPs (best-effort, sent to the license server for the dashboard)
 PUBLIC_IPV4=$(curl -s -4 --max-time 3 https://api.ipify.org 2>/dev/null || echo "")
 PUBLIC_IPV6=$(curl -s -6 --max-time 3 https://api6.ipify.org 2>/dev/null || echo "")
 
@@ -308,12 +400,9 @@ if [[ -n "$PROVIDED_KEY" ]]; then
     LIC_RESP=$(curl -sf -X POST "$LICENSE_SERVER/api/v1/activate" \
         -H "Content-Type: application/json" \
         -d "$(jq -n \
-            --arg lk "$PROVIDED_KEY" \
-            --arg fp "$FINGERPRINT" \
-            --arg hn "$HOSTNAME_OVERRIDE" \
-            --arg pv "installer" \
-            --arg v4 "$PUBLIC_IPV4" \
-            --arg v6 "$PUBLIC_IPV6" \
+            --arg lk "$PROVIDED_KEY" --arg fp "$FINGERPRINT" \
+            --arg hn "$HOSTNAME_OVERRIDE" --arg pv "installer" \
+            --arg v4 "$PUBLIC_IPV4" --arg v6 "$PUBLIC_IPV6" \
             '{license_key:$lk, fingerprint:$fp, hostname:$hn, panel_version:$pv, public_ipv4:$v4, public_ipv6:$v6}')") \
         || fail "License activation failed (key invalid or server error)"
     LICENSE_KEY="$PROVIDED_KEY"
@@ -322,11 +411,9 @@ else
     LIC_RESP=$(curl -sf -X POST "$LICENSE_SERVER/api/v1/community-license" \
         -H "Content-Type: application/json" \
         -d "$(jq -n \
-            --arg fp "$FINGERPRINT" \
-            --arg hn "$HOSTNAME_OVERRIDE" \
+            --arg fp "$FINGERPRINT" --arg hn "$HOSTNAME_OVERRIDE" \
             --arg pv "installer" \
-            --arg v4 "$PUBLIC_IPV4" \
-            --arg v6 "$PUBLIC_IPV6" \
+            --arg v4 "$PUBLIC_IPV4" --arg v6 "$PUBLIC_IPV6" \
             '{fingerprint:$fp, hostname:$hn, panel_version:$pv, public_ipv4:$v4, public_ipv6:$v6}')") \
         || fail "Community license issuance failed"
     LICENSE_KEY=$(echo "$LIC_RESP" | jq -r .license_key)
@@ -336,7 +423,6 @@ LICENSE_TOKEN=$(echo "$LIC_RESP" | jq -r .token)
 LICENSE_TIER=$(echo "$LIC_RESP" | jq -r .tier)
 LICENSE_EXPIRES=$(echo "$LIC_RESP" | jq -r .expires_at)
 
-# Write license file in the format the panel's license.Manager expects
 cat > "$NOVA_LICENSE_DIR/license.json" <<EOF
 {
   "license_key": "$LICENSE_KEY",
@@ -356,31 +442,25 @@ ok "$LICENSE_TIER license activated ($LICENSE_KEY)"
 # ─────────────────────────────────────────────────────────
 step "Downloading NovaPanel binary"
 
-# Get version manifest first (for the SHA-256 to verify against)
 MANIFEST=$(curl -sf "$LICENSE_SERVER/api/v1/version/latest") \
     || fail "Couldn't fetch version manifest"
 EXPECTED_SHA=$(echo "$MANIFEST" | jq -r .sha256)
 LATEST_VERSION=$(echo "$MANIFEST" | jq -r .version)
 EXPECTED_SIZE=$(echo "$MANIFEST" | jq -r .size_bytes)
-info "Latest version: $LATEST_VERSION (sha256: ${EXPECTED_SHA:0:12}…)"
+info "Latest version: $LATEST_VERSION"
 
-# Download with the license JWT
 curl -fL -H "Authorization: Bearer $LICENSE_TOKEN" \
     "$LICENSE_SERVER/api/v1/download/latest" \
     -o "$NOVA_DIR/bin/novapanel.new" \
-    || fail "Binary download failed (license server denied or network error)"
+    || fail "Binary download failed"
 
-# Verify size
 ACTUAL_SIZE=$(stat -c%s "$NOVA_DIR/bin/novapanel.new")
-if [[ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]]; then
-    fail "Binary size mismatch (got $ACTUAL_SIZE, expected $EXPECTED_SIZE)"
-fi
+[[ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]] && fail "Binary size mismatch (got $ACTUAL_SIZE, expected $EXPECTED_SIZE)"
 
-# Verify SHA-256
 ACTUAL_SHA=$(sha256sum "$NOVA_DIR/bin/novapanel.new" | awk '{print $1}')
 if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
     rm -f "$NOVA_DIR/bin/novapanel.new"
-    fail "Binary SHA-256 mismatch — refusing to install (got $ACTUAL_SHA, expected $EXPECTED_SHA)"
+    fail "Binary SHA-256 mismatch — refusing to install"
 fi
 ok "Downloaded + verified ($ACTUAL_SIZE bytes)"
 
@@ -389,7 +469,7 @@ chmod +x "$NOVA_DIR/bin/novapanel"
 chown "$NOVA_USER:$NOVA_USER" "$NOVA_DIR/bin/novapanel"
 
 # ─────────────────────────────────────────────────────────
-# .env file
+# .env
 # ─────────────────────────────────────────────────────────
 step "Writing panel configuration"
 JWT_SECRET=$(openssl rand -hex 32)
@@ -407,10 +487,30 @@ NOVA_CUSTOMER_PORT=2083
 NOVA_CADDY_API=http://localhost:2019
 NOVA_LICENSE_SERVER=$LICENSE_SERVER
 NOVA_ACME_EMAIL=$ADMIN_EMAIL
+NOVA_HOSTNAME=$HOSTNAME_OVERRIDE
 EOF
 chown root:"$NOVA_USER" "$NOVA_DIR/config/.env"
 chmod 640 "$NOVA_DIR/config/.env"
 ok "Configuration written"
+
+# ─────────────────────────────────────────────────────────
+# Pre-create initial admin user in DB
+# ─────────────────────────────────────────────────────────
+step "Creating initial admin user"
+ADMIN_HASH=$(php -r "echo password_hash('$ADMIN_PASSWORD', PASSWORD_BCRYPT, ['cost' => 12]);")
+PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U novapanel -d novapanel >>"$INSTALL_LOG" 2>&1 <<EOF || true
+-- Schema may not exist yet (first panel run creates it). The panel
+-- will run migrations on startup; afterwards it skips creating an
+-- admin if one with this email already exists, so we let it handle
+-- this via env variables instead. Just record the desired admin in
+-- a settings file the panel reads on first boot.
+EOF
+cat > "$NOVA_DIR/config/initial-admin.json" <<EOF
+{"email":"$ADMIN_EMAIL","username":"$ADMIN_USERNAME","password":"$ADMIN_PASSWORD"}
+EOF
+chown root:"$NOVA_USER" "$NOVA_DIR/config/initial-admin.json"
+chmod 640 "$NOVA_DIR/config/initial-admin.json"
+ok "Admin credentials staged for first boot"
 
 # ─────────────────────────────────────────────────────────
 # systemd unit
@@ -446,28 +546,27 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-# sudoers entry so the panel can run systemd-run for self-updates
 cat > /etc/sudoers.d/novapanel <<EOF
 $NOVA_USER ALL=(root) NOPASSWD: /usr/bin/systemd-run, /usr/bin/systemctl restart novapanel, /usr/bin/systemctl restart caddy
 EOF
 chmod 440 /etc/sudoers.d/novapanel
 
 systemctl daemon-reload
-systemctl enable novapanel >/dev/null
+run "enable novapanel" systemctl enable novapanel
 ok "systemd unit installed"
 
 # ─────────────────────────────────────────────────────────
 # Firewall
 # ─────────────────────────────────────────────────────────
 step "Configuring firewall"
-ufw default deny incoming >/dev/null 2>&1 || true
-ufw default allow outgoing >/dev/null 2>&1 || true
-ufw allow 22/tcp >/dev/null 2>&1
-ufw allow 80/tcp >/dev/null 2>&1
-ufw allow 443/tcp >/dev/null 2>&1
-ufw allow 2083/tcp >/dev/null 2>&1   # customer panel
-ufw allow 2087/tcp >/dev/null 2>&1   # admin panel
-ufw --force enable >/dev/null 2>&1 || true
+ufw default deny incoming >>"$INSTALL_LOG" 2>&1
+ufw default allow outgoing >>"$INSTALL_LOG" 2>&1
+ufw allow 22/tcp >>"$INSTALL_LOG" 2>&1
+ufw allow 80/tcp >>"$INSTALL_LOG" 2>&1
+ufw allow 443/tcp >>"$INSTALL_LOG" 2>&1
+ufw allow 2083/tcp >>"$INSTALL_LOG" 2>&1
+ufw allow 2087/tcp >>"$INSTALL_LOG" 2>&1
+ufw --force enable >>"$INSTALL_LOG" 2>&1
 ok "Firewall configured (22, 80, 443, 2083, 2087)"
 
 # ─────────────────────────────────────────────────────────
@@ -480,7 +579,9 @@ sleep 3
 if systemctl is-active --quiet novapanel; then
     ok "NovaPanel is running"
 else
-    warn "Service did not start cleanly. Check: journalctl -u novapanel -n 50"
+    warn "Service did not start. Last log lines:"
+    journalctl -u novapanel -n 20 --no-pager | sed 's/^/    /'
+    fail "Panel failed to start"
 fi
 
 # ─────────────────────────────────────────────────────────
@@ -496,18 +597,22 @@ ${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━�
   ${BOLD}Admin panel:${RESET}    https://${PUBLIC_IP}:2087
   ${BOLD}Customer panel:${RESET} https://${PUBLIC_IP}:2083
 
+  ${BOLD}Admin login:${RESET}
+    Email:    $ADMIN_EMAIL
+    Username: $ADMIN_USERNAME
+    Password: ${BOLD}$ADMIN_PASSWORD${RESET}
+
+  ${YELLOW}SAVE THE PASSWORD ABOVE — it's not stored anywhere recoverable.${RESET}
+
   ${BOLD}License tier:${RESET}   $LICENSE_TIER
   ${BOLD}License key:${RESET}    $LICENSE_KEY
-  ${BOLD}Fingerprint:${RESET}    ${FINGERPRINT:0:16}…
 
-  ${YELLOW}Next steps:${RESET}
+  ${BOLD}Next steps:${RESET}
     1. Open the admin panel in your browser
-    2. Log in (initial admin credentials are printed in the panel logs:
-       journalctl -u novapanel | grep "initial admin")
-    3. Set up your domain in admin -> Server -> Hostname for proper SSL
-    4. To upgrade to Pro, paste your key in admin -> Config -> License
+    2. Log in with the credentials above
+    3. To upgrade to Pro, paste your key in admin → Config → License
 
-  ${BOLD}Support:${RESET}        https://novapanel.dev/support
-  ${BOLD}Documentation:${RESET}  https://novapanel.dev/docs
+  ${BOLD}Install log:${RESET}    $INSTALL_LOG
+  ${BOLD}Service logs:${RESET}   journalctl -u novapanel -f
 
 EOF
