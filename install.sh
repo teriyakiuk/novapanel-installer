@@ -504,21 +504,9 @@ ok "Configuration written"
 # ─────────────────────────────────────────────────────────
 # Pre-create initial admin user in DB
 # ─────────────────────────────────────────────────────────
-step "Creating initial admin user"
+step "Preparing admin credentials"
 ADMIN_HASH=$(php -r "echo password_hash('$ADMIN_PASSWORD', PASSWORD_BCRYPT, ['cost' => 12]);")
-PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U novapanel -d novapanel >>"$INSTALL_LOG" 2>&1 <<EOF || true
--- Schema may not exist yet (first panel run creates it). The panel
--- will run migrations on startup; afterwards it skips creating an
--- admin if one with this email already exists, so we let it handle
--- this via env variables instead. Just record the desired admin in
--- a settings file the panel reads on first boot.
-EOF
-cat > "$NOVA_DIR/config/initial-admin.json" <<EOF
-{"email":"$ADMIN_EMAIL","username":"$ADMIN_USERNAME","password":"$ADMIN_PASSWORD"}
-EOF
-chown root:"$NOVA_USER" "$NOVA_DIR/config/initial-admin.json"
-chmod 640 "$NOVA_DIR/config/initial-admin.json"
-ok "Admin credentials staged for first boot"
+ok "Password hashed"
 
 # ─────────────────────────────────────────────────────────
 # systemd unit
@@ -590,6 +578,49 @@ else
     warn "Service did not start. Last log lines:"
     journalctl -u novapanel -n 20 --no-pager | sed 's/^/    /'
     fail "Panel failed to start"
+fi
+
+# ─────────────────────────────────────────────────────────
+# Apply admin credentials (after migrations have run + seeded
+# the default admin@novapanel.local user with the canonical
+# password hash). Wait until the users table exists so we don't
+# race the migration runner.
+# ─────────────────────────────────────────────────────────
+step "Setting admin credentials"
+APPLIED=0
+for i in $(seq 1 30); do
+    EXISTS=$(PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U novapanel -d novapanel -tAc \
+        "SELECT to_regclass('public.users')" 2>/dev/null || true)
+    if [[ "$EXISTS" == "users" ]]; then
+        # Replace the seeded admin row with the operator's chosen email +
+        # username + password. Updates the canonical seed row identified
+        # by username 'admin' (the row migration 001 inserts).
+        PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U novapanel -d novapanel >>"$INSTALL_LOG" 2>&1 <<EOF
+UPDATE users
+   SET email = '$ADMIN_EMAIL',
+       username = '$ADMIN_USERNAME',
+       password_hash = '$ADMIN_HASH',
+       is_active = true,
+       updated_at = now()
+ WHERE username IN ('admin', '$ADMIN_USERNAME')
+    OR email = 'admin@novapanel.local'
+ RETURNING id;
+EOF
+        if [[ $? -eq 0 ]]; then
+            APPLIED=1
+            break
+        fi
+    fi
+    sleep 1
+done
+if [[ $APPLIED -eq 1 ]]; then
+    ok "Admin credentials applied"
+else
+    warn "Couldn't apply admin credentials — falling back to default seed"
+    warn "Login with: admin@novapanel.local / NovaPanel@2024 — change immediately"
+    ADMIN_EMAIL="admin@novapanel.local"
+    ADMIN_USERNAME="admin"
+    ADMIN_PASSWORD="NovaPanel@2024"
 fi
 
 # ─────────────────────────────────────────────────────────
