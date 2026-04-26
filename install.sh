@@ -3,6 +3,14 @@ set -uo pipefail
 # Note: not using 'set -e' because many apt/service commands return non-zero
 # on idempotent operations (already installed, already running, etc.)
 
+# When invoked as `curl ... | sudo bash`, stdin is the script bytes
+# (the curl pipe) — every `read` prompt would silently see EOF and
+# use defaults. Reattach /dev/tty as stdin so the interactive prompts
+# work the same as `bash install.sh`.
+if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
+    exec </dev/tty
+fi
+
 # ─────────────────────────────────────────────────────────
 # NovaPanel Installer (CDN edition)
 # The Modern Hosting Control Panel
