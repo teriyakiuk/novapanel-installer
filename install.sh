@@ -196,6 +196,13 @@ DEFAULT_HOST=$(hostname --fqdn 2>/dev/null || hostname)
 [[ -z "$HOSTNAME_OVERRIDE" ]] && HOSTNAME_OVERRIDE="$DEFAULT_HOST"
 [[ -z "$ADMIN_EMAIL" ]] && ADMIN_EMAIL="admin@${HOSTNAME_OVERRIDE#*.}"
 
+# When run as `curl ... | sudo bash`, stdin is the script body so prompts
+# can't read from the user. Reattach to the controlling tty when one is
+# available so the prompts work even via the one-liner pipe.
+if [[ "$NON_INTERACTIVE" -eq 0 ]] && [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
+    exec </dev/tty
+fi
+
 if [[ "$NON_INTERACTIVE" -eq 0 && -t 0 ]]; then
     step "Configuration"
 
@@ -475,11 +482,13 @@ step "Writing panel configuration"
 JWT_SECRET=$(openssl rand -hex 32)
 cat > "$NOVA_DIR/config/.env" <<EOF
 NOVA_ENV=production
+NOVA_LOG_LEVEL=info
 NOVA_DB_HOST=127.0.0.1
 NOVA_DB_PORT=5432
 NOVA_DB_NAME=novapanel
 NOVA_DB_USER=novapanel
-NOVA_DB_PASS=$DB_PASS
+NOVA_DB_PASSWORD=$DB_PASS
+NOVA_DB_SSLMODE=disable
 NOVA_REDIS_URL=redis://localhost:6379/0
 NOVA_JWT_SECRET=$JWT_SECRET
 NOVA_ADMIN_PORT=2087
@@ -487,7 +496,6 @@ NOVA_CUSTOMER_PORT=2083
 NOVA_CADDY_API=http://localhost:2019
 NOVA_LICENSE_SERVER=$LICENSE_SERVER
 NOVA_ACME_EMAIL=$ADMIN_EMAIL
-NOVA_HOSTNAME=$HOSTNAME_OVERRIDE
 EOF
 chown root:"$NOVA_USER" "$NOVA_DIR/config/.env"
 chmod 640 "$NOVA_DIR/config/.env"
