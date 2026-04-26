@@ -566,6 +566,36 @@ ufw --force enable >>"$INSTALL_LOG" 2>&1
 ok "Firewall configured (22, 80, 443, 2083, 2087)"
 
 # ─────────────────────────────────────────────────────────
+# Caddy reverse proxy with auto Let's Encrypt for the chosen hostname.
+# If DNS isn't pointed yet the cert won't issue immediately — Caddy
+# will keep retrying. The :80 listener still serves so the operator
+# can hit the panel via http://IP for the initial setup.
+# ─────────────────────────────────────────────────────────
+step "Configuring Caddy reverse proxy"
+cat > /etc/caddy/Caddyfile <<EOF
+{
+    email $ADMIN_EMAIL
+}
+
+# Admin panel — auto-TLS for the chosen hostname
+$HOSTNAME_OVERRIDE:2087 {
+    reverse_proxy 127.0.0.1:2087
+}
+
+# Customer panel — auto-TLS for the chosen hostname
+$HOSTNAME_OVERRIDE:2083 {
+    reverse_proxy 127.0.0.1:2083
+}
+
+# Plain-HTTP fallback so http://IP works during initial DNS propagation
+:80 {
+    reverse_proxy 127.0.0.1:2087
+}
+EOF
+systemctl reload caddy >>"$INSTALL_LOG" 2>&1 || systemctl restart caddy >>"$INSTALL_LOG" 2>&1
+ok "Caddy configured (HTTPS on $HOSTNAME_OVERRIDE, HTTP fallback on IP)"
+
+# ─────────────────────────────────────────────────────────
 # Start the panel
 # ─────────────────────────────────────────────────────────
 step "Starting NovaPanel"
