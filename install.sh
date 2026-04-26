@@ -927,13 +927,28 @@ fi
 step "MariaDB"
 start_spinner "Installing MariaDB..."
 if ! command -v mysql &>/dev/null; then
-    run apt-get install -y -qq mariadb-server mariadb-client
+    # apt-get install can transiently fail (network blip during package
+    # download, dpkg lock contention from background services). Retry up
+    # to 3 times before giving up — last time we hit this it succeeded
+    # on the second attempt.
+    INSTALL_OK=0
+    for attempt in 1 2 3; do
+        if apt-get install -y -qq mariadb-server mariadb-client >> "$INSTALL_LOG" 2>&1; then
+            INSTALL_OK=1
+            break
+        fi
+        echo "── retry $attempt: apt-get install mariadb-server" >> "$INSTALL_LOG"
+        sleep 5
+    done
+    if [[ $INSTALL_OK -eq 0 ]]; then
+        stop_spinner "MariaDB apt install failed after 3 retries — see $INSTALL_LOG" fail
+        exit 1
+    fi
     systemctl daemon-reload >> "$INSTALL_LOG" 2>&1
     run systemctl enable mariadb
 
     # systemctl start returns before mariadb is fully ready on slower
-    # systems — the immediate is-active check below would see "activating"
-    # and fail. Retry a few times to absorb that race.
+    # systems. Retry to absorb that race.
     for attempt in 1 2 3 4 5; do
         systemctl start mariadb 2>/dev/null
         sleep 2
