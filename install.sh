@@ -3,12 +3,26 @@ set -uo pipefail
 # Note: not using 'set -e' because many apt/service commands return non-zero
 # on idempotent operations (already installed, already running, etc.)
 
-# When invoked as `curl ... | sudo bash`, stdin is the script bytes
-# (the curl pipe) — every `read` prompt would silently see EOF and
-# use defaults. Reattach /dev/tty as stdin so the interactive prompts
-# work the same as `bash install.sh`.
-if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
-    exec </dev/tty
+# Curl-pipe-bash trick. When invoked as `curl ... | sudo bash`, stdin is
+# the script bytes themselves — bash reads us from the pipe AND the
+# script's interactive `read` prompts have nowhere real to read from.
+# Naively doing `exec </dev/tty` would also break bash's own reading of
+# the rest of the script (would try to read more lines from the now-
+# disconnected pipe and hang).
+#
+# Bulletproof fix: detect "stdin isn't a tty AND a real tty is reachable
+# AND we have curl", re-download the script to disk, then re-exec from
+# the disk copy with /dev/tty wired up as stdin. After re-exec, bash
+# reads the script from a regular file and `read` prompts work normally.
+if [[ ! -t 0 ]] && [[ -r /dev/tty ]] && command -v curl >/dev/null; then
+    TMPSELF=$(mktemp /tmp/novapanel-install-XXXXXX.sh)
+    if curl -fsSL "${LICENSE_SERVER_BOOTSTRAP:-https://license.novapanel.dev}/install.sh" -o "$TMPSELF" 2>/dev/null; then
+        chmod +x "$TMPSELF"
+        exec sudo -E bash "$TMPSELF" "$@" </dev/tty
+    fi
+    rm -f "$TMPSELF"
+    # Fall through to non-interactive mode if the re-download failed —
+    # better degraded than completely stuck.
 fi
 
 # ─────────────────────────────────────────────────────────
