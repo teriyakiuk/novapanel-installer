@@ -593,6 +593,63 @@ fi
 run systemctl enable caddy
 stop_spinner "Caddy installed"
 
+# ── MariaDB (Customer Databases) ───────────────────
+# IMPORTANT: install MariaDB BEFORE the optional services (Postfix,
+# Dovecot, OpenDKIM, etc). Installing it after the mail stack
+# triggers a known interaction where deb-systemd-invoke fails
+# silently in mariadb's post-install hook ("Could not execute
+# systemctl: at /usr/bin/deb-systemd-invoke line 148"), apt returns
+# 0 anyway, and mariadb is left installed but never started.
+# Reproducible only with the cumulative state from earlier installs;
+# manual `apt-get install mariadb-server` from a fresh shell works
+# fine. Putting it here ensures only Postgres + Redis + Caddy have
+# touched systemd state when mariadb's hook runs.
+
+step "MariaDB"
+start_spinner "Installing MariaDB..."
+if ! command -v mysql &>/dev/null; then
+    INSTALL_OK=0
+    for attempt in 1 2 3; do
+        if apt-get install -y mariadb-server mariadb-client >> "$INSTALL_LOG" 2>&1; then
+            INSTALL_OK=1
+            break
+        fi
+        echo "── retry $attempt: apt-get install mariadb-server" >> "$INSTALL_LOG"
+        sleep 5
+    done
+    if [[ $INSTALL_OK -eq 0 ]]; then
+        stop_spinner "MariaDB apt install failed after 3 retries — see $INSTALL_LOG" fail
+        exit 1
+    fi
+    if ! dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'; then
+        stop_spinner "MariaDB apt-get returned 0 but mariadb-server is not installed — see $INSTALL_LOG" fail
+        exit 1
+    fi
+    systemctl daemon-reload >> "$INSTALL_LOG" 2>&1
+    systemctl enable mariadb >> "$INSTALL_LOG" 2>&1
+    if [[ ! -d /var/lib/mysql/mysql ]]; then
+        echo "── initializing mariadb data dir" >> "$INSTALL_LOG"
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql >> "$INSTALL_LOG" 2>&1 || \
+            mysql_install_db --user=mysql --datadir=/var/lib/mysql >> "$INSTALL_LOG" 2>&1 || true
+    fi
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        systemctl start mariadb >> "$INSTALL_LOG" 2>&1 || true
+        sleep 2
+        systemctl is-active --quiet mariadb && break
+    done
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;" >> "$INSTALL_LOG" 2>&1 || true
+fi
+if ! command -v mysql >/dev/null 2>&1; then
+    stop_spinner "MariaDB install failed — mysql client not found" fail
+    exit 1
+fi
+if ! systemctl is-active --quiet mariadb; then
+    stop_spinner "MariaDB install failed — service did not start" fail
+    echo -e "${RED}Check: systemctl status mariadb${NC}" >&2
+    exit 1
+fi
+stop_spinner "MariaDB installed (customer databases)"
+
 # ── Optional: Node.js ──────────────────────────────
 
 if [[ "$INSTALL_NODEJS" == "yes" ]]; then
@@ -948,81 +1005,6 @@ PAMEOF
     fi
     stop_spinner "vsftpd installed"
 fi
-
-# ── MariaDB (Customer Databases) ───────────────────
-
-step "MariaDB"
-start_spinner "Installing MariaDB..."
-if ! command -v mysql &>/dev/null; then
-    # apt-get install for mariadb-server has a known issue on Ubuntu
-    # 24.04 where deb-systemd-invoke fails silently in its post-install
-    # hook ("Could not execute systemctl: at /usr/bin/deb-systemd-invoke
-    # line 148"), but apt still exits 0. Result: package installed,
-    # service NOT started, retry-on-non-zero never fires.
-    #
-    # Drop -qq so we capture full apt output to the log, then ALWAYS
-    # do the systemctl dance ourselves regardless of what apt's hook
-    # claims.
-    INSTALL_OK=0
-    for attempt in 1 2 3; do
-        if apt-get install -y mariadb-server mariadb-client >> "$INSTALL_LOG" 2>&1; then
-            INSTALL_OK=1
-            break
-        fi
-        echo "── retry $attempt: apt-get install mariadb-server" >> "$INSTALL_LOG"
-        sleep 5
-    done
-    if [[ $INSTALL_OK -eq 0 ]]; then
-        stop_spinner "MariaDB apt install failed after 3 retries — see $INSTALL_LOG" fail
-        exit 1
-    fi
-
-    # Sanity check: package actually installed
-    if ! dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'; then
-        stop_spinner "MariaDB apt-get returned 0 but mariadb-server is not installed — see $INSTALL_LOG" fail
-        exit 1
-    fi
-
-    # Reload systemd to pick up the new unit (deb-systemd-invoke may
-    # have failed during post-install)
-    systemctl daemon-reload >> "$INSTALL_LOG" 2>&1
-    systemctl enable mariadb >> "$INSTALL_LOG" 2>&1
-
-    # If the data directory doesn't have system tables yet, initialize
-    # them. Normally mariadb's post-install does this, but if
-    # deb-systemd-invoke failed, it may not have been triggered.
-    if [[ ! -d /var/lib/mysql/mysql ]]; then
-        echo "── initializing mariadb data dir" >> "$INSTALL_LOG"
-        mariadb-install-db --user=mysql --datadir=/var/lib/mysql >> "$INSTALL_LOG" 2>&1 || \
-            mysql_install_db --user=mysql --datadir=/var/lib/mysql >> "$INSTALL_LOG" 2>&1 || true
-    fi
-
-    # Start with retries — give systemd time to register the unit
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        systemctl start mariadb >> "$INSTALL_LOG" 2>&1 || true
-        sleep 2
-        systemctl is-active --quiet mariadb && break
-    done
-
-    # Secure: set root auth to unix_socket
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;" >> "$INSTALL_LOG" 2>&1 || true
-fi
-# Hard fail loudly if mysql isn't actually working — without this the
-# bootstrap used to claim "MariaDB installed" while apt had silently
-# failed, and customers' database creation would later return
-# password="pending_creation" with no obvious cause.
-if ! command -v mysql >/dev/null 2>&1; then
-    stop_spinner "MariaDB install failed — mysql client not found" fail
-    echo -e "${RED}MariaDB did not install. Check $INSTALL_LOG.${NC}" >&2
-    echo -e "${YELLOW}Common cause: apt repo unreachable, or another apt process held the dpkg lock.${NC}" >&2
-    exit 1
-fi
-if ! systemctl is-active --quiet mariadb; then
-    stop_spinner "MariaDB install failed — service not running" fail
-    echo -e "${RED}MariaDB installed but didn't start after 5 retries. Run: systemctl status mariadb${NC}" >&2
-    exit 1
-fi
-stop_spinner "MariaDB installed (customer databases)"
 
 # ── phpMyAdmin ─────────────────────────────────────
 
