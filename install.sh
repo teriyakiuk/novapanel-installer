@@ -19,6 +19,12 @@ if [[ ! -t 0 ]] && [[ -r /dev/tty ]] && command -v curl >/dev/null; then
     if curl -fsSL "${LICENSE_SERVER_BOOTSTRAP:-https://license.novapanel.dev}/install.sh" -o "$TMPSELF" 2>/dev/null \
         && [[ -s "$TMPSELF" ]]; then
         chmod +x "$TMPSELF"
+        # Drain whatever's left of the original curl pipe in the
+        # background so curl doesn't end with 'curl: (23) Failure
+        # writing output to destination' after the install is done.
+        # The drain process is inherited by the exec'd bash and runs
+        # silently to completion (curl finishes writing, drain exits).
+        cat >/dev/null </dev/stdin &
         # We're already running as root via the outer 'sudo bash' (or
         # the user ran us as root directly). Don't sudo again — it can
         # hang on password prompts or tty re-allocation. Plain `exec
