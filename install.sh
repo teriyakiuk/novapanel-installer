@@ -1122,12 +1122,29 @@ info "fingerprint: ${FINGERPRINT:0:16}…"
 PUBLIC_IPV4=$(curl -s -4 --max-time 3 https://api.ipify.org 2>/dev/null || echo "")
 PUBLIC_IPV6=$(curl -s -6 --max-time 3 https://api6.ipify.org 2>/dev/null || echo "")
 
+# Fetch the version manifest FIRST so the activate / community-license
+# call can report the actual NovaPanel version (otherwise the dashboard
+# shows panel_version="installer" forever, until the panel itself does
+# its first heartbeat refresh ~24 days later).
+start_spinner "Fetching version manifest..."
+MANIFEST=$(curl -sf "$LICENSE_SERVER/api/v1/version/latest")
+if [[ -z "$MANIFEST" ]]; then
+    stop_spinner "Couldn't fetch version manifest" fail
+    exit 1
+fi
+EXPECTED_SHA=$(echo "$MANIFEST" | jq -r .sha256)
+NOVA_VER=$(echo "$MANIFEST" | jq -r .version)
+EXPECTED_SIZE=$(echo "$MANIFEST" | jq -r .size_bytes)
+NOVA_VERSION="$NOVA_VER"
+NOVA_COMMIT=$(echo "$MANIFEST" | jq -r .commit)
+stop_spinner "Latest version: ${NOVA_VER}"
+
 start_spinner "Fetching license..."
 if [[ -n "$PROVIDED_KEY" ]]; then
     LIC_RESP=$(curl -sf -X POST "$LICENSE_SERVER/api/v1/activate" \
         -H "Content-Type: application/json" \
         -d "$(jq -n --arg lk "$PROVIDED_KEY" --arg fp "$FINGERPRINT" \
-            --arg hn "${HOSTNAME_SET:-$HOST_FOR_FP}" --arg pv "installer" \
+            --arg hn "${HOSTNAME_SET:-$HOST_FOR_FP}" --arg pv "$NOVA_VER" \
             --arg v4 "$PUBLIC_IPV4" --arg v6 "$PUBLIC_IPV6" \
             '{license_key:$lk, fingerprint:$fp, hostname:$hn, panel_version:$pv, public_ipv4:$v4, public_ipv6:$v6}')")
     if [[ -z "$LIC_RESP" ]]; then
@@ -1139,7 +1156,7 @@ else
     LIC_RESP=$(curl -sf -X POST "$LICENSE_SERVER/api/v1/community-license" \
         -H "Content-Type: application/json" \
         -d "$(jq -n --arg fp "$FINGERPRINT" --arg hn "${HOSTNAME_SET:-$HOST_FOR_FP}" \
-            --arg pv "installer" --arg v4 "$PUBLIC_IPV4" --arg v6 "$PUBLIC_IPV6" \
+            --arg pv "$NOVA_VER" --arg v4 "$PUBLIC_IPV4" --arg v6 "$PUBLIC_IPV6" \
             '{fingerprint:$fp, hostname:$hn, panel_version:$pv, public_ipv4:$v4, public_ipv6:$v6}')")
     if [[ -z "$LIC_RESP" ]]; then
         stop_spinner "Community license issuance failed" fail
@@ -1164,18 +1181,6 @@ chmod 640 "${NOVA_LICENSE_DIR}/license.json"
 stop_spinner "License: ${LICENSE_TIER} (${LICENSE_KEY})"
 
 step "Downloading NovaPanel binary"
-start_spinner "Fetching version manifest..."
-MANIFEST=$(curl -sf "$LICENSE_SERVER/api/v1/version/latest")
-if [[ -z "$MANIFEST" ]]; then
-    stop_spinner "Couldn't fetch version manifest" fail
-    exit 1
-fi
-EXPECTED_SHA=$(echo "$MANIFEST" | jq -r .sha256)
-NOVA_VER=$(echo "$MANIFEST" | jq -r .version)
-EXPECTED_SIZE=$(echo "$MANIFEST" | jq -r .size_bytes)
-NOVA_VERSION="$NOVA_VER"
-NOVA_COMMIT=$(echo "$MANIFEST" | jq -r .commit)
-stop_spinner "Latest version: ${NOVA_VER}"
 
 start_spinner "Downloading binary..."
 mkdir -p "${NOVA_DIR}/bin"
