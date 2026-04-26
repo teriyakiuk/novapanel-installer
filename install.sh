@@ -1532,10 +1532,20 @@ stop_spinner "NovaPanel started"
 if [[ -n "$ADMIN_HASH" ]]; then
     start_spinner "Applying admin credentials..."
     APPLIED=0
-    for i in $(seq 1 30); do
-        EXISTS=$(PGPASSWORD="${DB_PASS}" psql -h localhost -U ${DB_USER} -d ${DB_NAME} -tAc "SELECT to_regclass('public.users')" 2>/dev/null || true)
+    LAST_ERR=""
+    # 90 retries × 1s = 90s wall-clock max. Migrations themselves take
+    # ~1-2s on a normal VPS but we leave generous headroom for slow disks
+    # / first-boot cloud-init contention. Also re-check the panel is
+    # actually running on each iteration so we exit quickly if the
+    # service crashed instead of waiting the full 90s.
+    for i in $(seq 1 90); do
+        if ! systemctl is-active --quiet novapanel; then
+            LAST_ERR="novapanel service not running (check: journalctl -u novapanel)"
+            break
+        fi
+        EXISTS=$(PGPASSWORD="${DB_PASS}" psql -h localhost -U ${DB_USER} -d ${DB_NAME} -tAc "SELECT to_regclass('public.users')" 2>>"$INSTALL_LOG" || true)
         if [[ "$EXISTS" == "users" ]]; then
-            PGPASSWORD="${DB_PASS}" psql -h localhost -U ${DB_USER} -d ${DB_NAME} >> "$INSTALL_LOG" 2>&1 <<EOF
+            if PGPASSWORD="${DB_PASS}" psql -v ON_ERROR_STOP=1 -h localhost -U ${DB_USER} -d ${DB_NAME} >> "$INSTALL_LOG" 2>&1 <<EOF
 INSERT INTO users (email, username, password_hash, role)
 VALUES ('${ADMIN_EMAIL}', '${ADMIN_USER}', '${ADMIN_HASH}', 'admin')
 ON CONFLICT (username) DO UPDATE SET
@@ -1544,15 +1554,21 @@ ON CONFLICT (username) DO UPDATE SET
     is_active = true,
     updated_at = NOW();
 EOF
-            APPLIED=1
+            then
+                APPLIED=1
+            else
+                LAST_ERR="INSERT/UPDATE failed — see $INSTALL_LOG"
+            fi
             break
         fi
         sleep 1
     done
     if [[ $APPLIED -eq 1 ]]; then
-        stop_spinner "Admin credentials applied"
+        stop_spinner "Admin credentials applied (login: $ADMIN_USER / your chosen password)"
     else
-        stop_spinner "Couldn't apply admin credentials — falling back to default seed (admin@novapanel.local / NovaPanel@2024)" fail
+        stop_spinner "Couldn't apply admin credentials: $LAST_ERR — falling back to default seed" fail
+        echo -e "  ${YELLOW}Default credentials: admin@novapanel.local / NovaPanel@2024${NC}" >&2
+        echo -e "  ${YELLOW}Change immediately after first login.${NC}" >&2
         ADMIN_EMAIL="admin@novapanel.local"
         ADMIN_USER="admin"
         ADMIN_PASS="NovaPanel@2024"
