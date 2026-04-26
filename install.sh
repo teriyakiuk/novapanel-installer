@@ -16,9 +16,14 @@ set -uo pipefail
 # reads the script from a regular file and `read` prompts work normally.
 if [[ ! -t 0 ]] && [[ -r /dev/tty ]] && command -v curl >/dev/null; then
     TMPSELF=$(mktemp /tmp/novapanel-install-XXXXXX.sh)
-    if curl -fsSL "${LICENSE_SERVER_BOOTSTRAP:-https://license.novapanel.dev}/install.sh" -o "$TMPSELF" 2>/dev/null; then
+    if curl -fsSL "${LICENSE_SERVER_BOOTSTRAP:-https://license.novapanel.dev}/install.sh" -o "$TMPSELF" 2>/dev/null \
+        && [[ -s "$TMPSELF" ]]; then
         chmod +x "$TMPSELF"
-        exec sudo -E bash "$TMPSELF" "$@" </dev/tty
+        # We're already running as root via the outer 'sudo bash' (or
+        # the user ran us as root directly). Don't sudo again — it can
+        # hang on password prompts or tty re-allocation. Plain `exec
+        # bash` from disk with /dev/tty wired up is enough.
+        exec bash "$TMPSELF" "$@" </dev/tty
     fi
     rm -f "$TMPSELF"
     # Fall through to non-interactive mode if the re-download failed —
