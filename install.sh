@@ -954,13 +954,18 @@ fi
 step "MariaDB"
 start_spinner "Installing MariaDB..."
 if ! command -v mysql &>/dev/null; then
-    # apt-get install can transiently fail (network blip during package
-    # download, dpkg lock contention from background services). Retry up
-    # to 3 times before giving up — last time we hit this it succeeded
-    # on the second attempt.
+    # apt-get install for mariadb-server has a known issue on Ubuntu
+    # 24.04 where deb-systemd-invoke fails silently in its post-install
+    # hook ("Could not execute systemctl: at /usr/bin/deb-systemd-invoke
+    # line 148"), but apt still exits 0. Result: package installed,
+    # service NOT started, retry-on-non-zero never fires.
+    #
+    # Drop -qq so we capture full apt output to the log, then ALWAYS
+    # do the systemctl dance ourselves regardless of what apt's hook
+    # claims.
     INSTALL_OK=0
     for attempt in 1 2 3; do
-        if apt-get install -y -qq mariadb-server mariadb-client >> "$INSTALL_LOG" 2>&1; then
+        if apt-get install -y mariadb-server mariadb-client >> "$INSTALL_LOG" 2>&1; then
             INSTALL_OK=1
             break
         fi
@@ -971,13 +976,30 @@ if ! command -v mysql &>/dev/null; then
         stop_spinner "MariaDB apt install failed after 3 retries — see $INSTALL_LOG" fail
         exit 1
     fi
-    systemctl daemon-reload >> "$INSTALL_LOG" 2>&1
-    run systemctl enable mariadb
 
-    # systemctl start returns before mariadb is fully ready on slower
-    # systems. Retry to absorb that race.
-    for attempt in 1 2 3 4 5; do
-        systemctl start mariadb 2>/dev/null
+    # Sanity check: package actually installed
+    if ! dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'; then
+        stop_spinner "MariaDB apt-get returned 0 but mariadb-server is not installed — see $INSTALL_LOG" fail
+        exit 1
+    fi
+
+    # Reload systemd to pick up the new unit (deb-systemd-invoke may
+    # have failed during post-install)
+    systemctl daemon-reload >> "$INSTALL_LOG" 2>&1
+    systemctl enable mariadb >> "$INSTALL_LOG" 2>&1
+
+    # If the data directory doesn't have system tables yet, initialize
+    # them. Normally mariadb's post-install does this, but if
+    # deb-systemd-invoke failed, it may not have been triggered.
+    if [[ ! -d /var/lib/mysql/mysql ]]; then
+        echo "── initializing mariadb data dir" >> "$INSTALL_LOG"
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql >> "$INSTALL_LOG" 2>&1 || \
+            mysql_install_db --user=mysql --datadir=/var/lib/mysql >> "$INSTALL_LOG" 2>&1 || true
+    fi
+
+    # Start with retries — give systemd time to register the unit
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        systemctl start mariadb >> "$INSTALL_LOG" 2>&1 || true
         sleep 2
         systemctl is-active --quiet mariadb && break
     done
