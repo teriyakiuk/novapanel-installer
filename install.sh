@@ -1,4 +1,22 @@
 #!/usr/bin/env bash
+#
+# NovaPanel Installer
+# -------------------
+# Installs the NovaPanel hosting control panel on a fresh Ubuntu host.
+# This script is open source (MIT) so you can audit exactly what runs;
+# the panel binary it downloads is closed source and licensed
+# separately.
+#
+# Documents:
+#   EULA           https://novapanel.dev/eula     (governs use of the panel binary)
+#   Terms          https://novapanel.dev/terms    (commercial: billing, refunds, etc.)
+#   Privacy        https://novapanel.dev/privacy  (data handling)
+#   Source         https://github.com/teriyakiuk/novapanel-installer
+#
+# Running this installer constitutes acceptance of the EULA per its
+# section 1. The licence notice is also displayed at the start of an
+# interactive run.
+#
 set -uo pipefail
 # Note: not using 'set -e' because many apt/service commands return non-zero
 # on idempotent operations (already installed, already running, etc.)
@@ -264,6 +282,27 @@ echo -e "  ${DIM}│${NC}  Memory:   $(free -h | awk '/^Mem:/{print $2}')  •  
 echo -e "  ${DIM}│${NC}  Kernel:   $(uname -r)"
 echo -e "  ${DIM}└─────────────────────────────────────────────────┘${NC}"
 echo ""
+
+# ── Licence notice ──────────────────────────────────
+# NovaPanel is closed-source software distributed under an EULA. The
+# notice below tells the operator what they're accepting; running this
+# installer constitutes acceptance per the EULA's section 1 ("By
+# installing or using the Software you accept this EULA.").
+#
+# In interactive mode we print and pause briefly. In QUICK_MODE
+# (--yes) we still print so it's visible in CI logs, but we don't
+# pause — automated provisioning shouldn't have to wait on a human.
+echo -e "  ${BOLD}Licence${NC}"
+echo -e "  ${DIM}NovaPanel is licensed under the End-User License Agreement at${NC}"
+echo -e "  ${DIM}  ${NC}${CYAN}https://novapanel.dev/eula${NC}"
+echo -e "  ${DIM}Privacy policy: ${NC}${CYAN}https://novapanel.dev/privacy${NC}"
+echo -e "  ${DIM}Terms of service: ${NC}${CYAN}https://novapanel.dev/terms${NC}"
+echo -e "  ${DIM}Continuing the installation indicates acceptance of these terms.${NC}"
+echo ""
+if [[ "$QUICK_MODE" != "yes" ]]; then
+    read -t 5 -p "  Press Enter to continue, Ctrl-C to abort (auto-continues in 5s) " _ || true
+    echo ""
+fi
 
 # ── Interactive Setup ───────────────────────────────
 
