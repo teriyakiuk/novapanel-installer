@@ -1186,7 +1186,8 @@ else
         -H "Content-Type: application/json" \
         -d "$(jq -n --arg fp "$FINGERPRINT" --arg hn "${HOSTNAME_SET:-$HOST_FOR_FP}" \
             --arg pv "$NOVA_VER" --arg v4 "$PUBLIC_IPV4" --arg v6 "$PUBLIC_IPV6" \
-            '{fingerprint:$fp, hostname:$hn, panel_version:$pv, public_ipv4:$v4, public_ipv6:$v6}')")
+            --arg em "$ADMIN_EMAIL" \
+            '{fingerprint:$fp, hostname:$hn, panel_version:$pv, public_ipv4:$v4, public_ipv6:$v6, email:$em}')")
     if [[ -z "$LIC_RESP" ]]; then
         stop_spinner "Community license issuance failed" fail
         exit 1
