@@ -1230,6 +1230,63 @@ fi
 chmod +x "${NOVA_DIR}/bin/novapanel"
 echo "${NOVA_VER}" > "${NOVA_DIR}/VERSION"
 echo "${NOVA_COMMIT}" > "${NOVA_DIR}/COMMIT"
+
+# Symlink the binary into PATH so admins can run `novapanel status`,
+# `novapanel user list`, etc. from any cwd. The panel binary itself
+# detects when its first arg is a known CLI subcommand and dispatches
+# to the CLI code path; otherwise it boots the HTTP server. One binary,
+# both modes. Also expose `nova` as an alias for muscle-memory from the
+# old standalone CLI.
+ln -sf "${NOVA_DIR}/bin/novapanel" /usr/local/bin/novapanel
+ln -sf "${NOVA_DIR}/bin/novapanel" /usr/local/bin/nova
+
+# MOTD: replace the default Ubuntu banner with a NovaPanel-branded one
+# so anyone SSH'ing into the box sees panel URLs, version, license tier.
+# /etc/update-motd.d scripts run on each new login session and the
+# output gets cached at /run/motd.dynamic — pkill with a -HUP to
+# update-motd ensures the next login reflects the new banner.
+mkdir -p /etc/update-motd.d
+cat > /etc/update-motd.d/00-novapanel <<'MOTD_EOF'
+#!/bin/sh
+# NovaPanel login banner. Reads version / hostname / license dynamically
+# so the MOTD always reflects current state.
+. /opt/novapanel/config/.env 2>/dev/null || true
+VER=$(cat /opt/novapanel/VERSION 2>/dev/null || echo unknown)
+HOST=$(hostname -f 2>/dev/null || hostname)
+ADMIN_PORT="${NOVA_ADMIN_EXTERNAL_PORT:-2087}"
+CUSTOMER_PORT="${NOVA_CUSTOMER_EXTERNAL_PORT:-2083}"
+
+# ANSI escapes — kept inline so the script has no external deps.
+B='\033[1m'; D='\033[0m'; C='\033[36m'; G='\033[32m'
+
+cat <<EOF
+
+  ${C}╔══════════════════════════════════════════════════════════╗${D}
+  ${C}║${D}  ${B}NovaPanel${D} hosting control panel  ${G}v${VER}${D}  ${C}             ║${D}
+  ${C}╚══════════════════════════════════════════════════════════╝${D}
+
+  Admin panel:    https://${HOST}:${ADMIN_PORT}
+  Customer panel: https://${HOST}:${CUSTOMER_PORT}
+
+  CLI:            ${B}novapanel status${D}        Quick health summary
+                  ${B}novapanel user list${D}     Show all users
+                  ${B}novapanel help${D}          Full command list
+
+  Service:        systemctl status novapanel
+  Logs:           journalctl -u novapanel -f
+
+EOF
+MOTD_EOF
+chmod +x /etc/update-motd.d/00-novapanel
+
+# Disable the default Ubuntu motd-news fetch (slow, prints ads) and the
+# legal banner that competes for screen real estate.
+chmod -x /etc/update-motd.d/10-help-text 2>/dev/null || true
+chmod -x /etc/update-motd.d/50-motd-news 2>/dev/null || true
+
+# Run once now so the cached banner is fresh for the operator's next login.
+run-parts /etc/update-motd.d > /run/motd.dynamic 2>/dev/null || true
+
 stop_spinner "Downloaded + verified (${ACTUAL_SIZE} bytes, sha256=${EXPECTED_SHA:0:12}…)"
 
 # systemd unit: try a hosted copy first, fall back to writing inline
