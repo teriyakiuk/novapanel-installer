@@ -61,7 +61,7 @@ the admin UI later.
 | Databases | 5 | Unlimited | Unlimited |
 | Customer accounts | 5 | Unlimited | Unlimited |
 | WAF, virus scanner, S3 backups, git deploy, email, branding | — | ✓ | ✓ |
-| Lifetime / no expiry | ✓ | Subscription | ✓ |
+| Lifetime / no expiry | ✓ | Subscription | Subscription |
 
 See [novapanel.dev/pricing](https://novapanel.dev/pricing) for current pricing.
 
