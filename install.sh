@@ -60,9 +60,9 @@ fi
 # https://novapanel.dev
 #
 # Usage:
-#   Interactive:    curl -fsSL https://novapanel.dev/install.sh | sudo bash
-#   Quick:          curl -fsSL https://novapanel.dev/install.sh | sudo bash -s -- --quick
-#   With Pro key:   curl -fsSL https://novapanel.dev/install.sh | sudo bash -s -- --key NOVA-xxxx-...
+#   Interactive:    curl -fsSL https://license.novapanel.dev/install.sh | sudo bash
+#   Quick:          curl -fsSL https://license.novapanel.dev/install.sh | sudo bash -s -- --quick
+#   With Pro key:   curl -fsSL https://license.novapanel.dev/install.sh | sudo bash -s -- --key NOVA-xxxx-...
 #
 # Differences from scripts/bootstrap.sh (the source-tree dev installer):
 #   - No Go toolchain install (binary is pre-built and downloaded)

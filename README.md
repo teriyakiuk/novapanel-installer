@@ -20,7 +20,7 @@ The installer is open source so you can **audit exactly what runs on your server
 On a **fresh Ubuntu 22.04 or 24.04** server, as root:
 
 ```bash
-curl -fsSL https://novapanel.dev/install.sh | sudo bash
+curl -fsSL https://license.novapanel.dev/install.sh | sudo bash
 ```
 
 That's it. The installer takes ~10 minutes on a 2-CPU / 4 GB VPS and auto-issues a free **Community license** bound to your server's machine fingerprint — no signup required.
@@ -42,7 +42,7 @@ After install, you can sign in:
 If you've purchased a paid license, activate it from the start:
 
 ```bash
-curl -fsSL https://novapanel.dev/install.sh | sudo bash -s -- \
+curl -fsSL https://license.novapanel.dev/install.sh | sudo bash -s -- \
   --key NOVA-xxxx-xxxx-xxxx-xxxx-xxxx
 ```
 
@@ -53,7 +53,7 @@ You can also upgrade from Community to Pro any time later via the admin panel's 
 For CI or provisioning automation, skip the interactive prompts:
 
 ```bash
-curl -fsSL https://novapanel.dev/install.sh | sudo bash -s -- \
+curl -fsSL https://license.novapanel.dev/install.sh | sudo bash -s -- \
   --yes \
   --hostname panel.example.com \
   --admin-email admin@example.com \
@@ -68,7 +68,7 @@ NOVA_HOSTNAME=panel.example.com \
 NOVA_ADMIN_EMAIL=admin@example.com \
 NOVA_ADMIN_PASSWORD='a-strong-password' \
 NOVA_LICENSE_KEY=NOVA-xxxx-xxxx-xxxx-xxxx-xxxx \
-curl -fsSL https://novapanel.dev/install.sh | sudo -E bash
+curl -fsSL https://license.novapanel.dev/install.sh | sudo -E bash
 ```
 
 ### Skip optional components
