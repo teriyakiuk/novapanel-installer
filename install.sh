@@ -559,12 +559,14 @@ stop_spinner "Redis configured"
 
 # ── 6. Caddy Web Server ───────────────────────────
 
-step "Caddy web server (with Coraza WAF module)"
+step "Caddy web server (with Coraza WAF + PowerDNS DNS modules)"
 start_spinner "Installing Caddy..."
 # Install the apt package first — we only want the systemd unit, caddy user,
 # /etc/caddy directory and ancillary files it ships. The actual binary is
-# replaced below with one that bundles the coraza-caddy plugin so NovaPanel's
-# WAF feature actually filters traffic.
+# replaced below with one that bundles two plugins: coraza-caddy so NovaPanel's
+# WAF feature actually filters traffic, and caddy-dns/powerdns so Caddy can
+# solve ACME DNS-01 challenges against the panel's PowerDNS — the prerequisite
+# for issuing wildcard (*.domain) certificates.
 if ! dpkg -s caddy &>/dev/null; then
     run apt-get install -y -qq debian-keyring debian-archive-keyring || true
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
@@ -583,7 +585,9 @@ case "$CADDY_ARCH" in
     *)     CADDY_DL_ARCH="amd64" ;;
 esac
 
-CADDY_BUILD_URL="https://caddyserver.com/api/download?os=linux&arch=${CADDY_DL_ARCH}&p=github.com%2Fcorazawaf%2Fcoraza-caddy%2Fv2"
+# Both modules are requested via repeated &p= params; the build service bundles
+# each one into the single returned binary.
+CADDY_BUILD_URL="https://caddyserver.com/api/download?os=linux&arch=${CADDY_DL_ARCH}&p=github.com%2Fcorazawaf%2Fcoraza-caddy%2Fv2&p=github.com%2Fcaddy-dns%2Fpowerdns"
 CADDY_GOT=""
 
 # First try: Caddy's hosted build service. Capped at 90s so a slow
@@ -616,6 +620,7 @@ if [ -z "$CADDY_GOT" ] && [ "${SKIP_WAF:-no}" != "yes" ] && command -v go >/dev/
     if timeout 180 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest >>"$INSTALL_LOG" 2>&1 && \
        timeout 480 /usr/local/bin/xcaddy build \
            --with github.com/corazawaf/coraza-caddy/v2 \
+           --with github.com/caddy-dns/powerdns \
            --output /tmp/caddy-waf >>"$INSTALL_LOG" 2>&1; then
         chmod +x /tmp/caddy-waf
         if /tmp/caddy-waf list-modules 2>/dev/null | grep -Eqi "coraza|http\.handlers\.waf"; then
@@ -628,11 +633,20 @@ if [ -z "$CADDY_GOT" ] && [ "${SKIP_WAF:-no}" != "yes" ] && command -v go >/dev/
 fi
 
 if [ -n "$CADDY_GOT" ]; then
+    # Record whether the PowerDNS DNS provider made it into the binary, so a
+    # later "wildcard cert won't issue" report has a definitive answer in the
+    # install log. Coraza is the success gate above (WAF must work), so this is
+    # informational only and never blocks the install.
+    if "$CADDY_GOT" list-modules 2>/dev/null | grep -qi "dns.providers.powerdns"; then
+        echo "INFO: Caddy includes dns.providers.powerdns — wildcard SSL (DNS-01) available." >> "$INSTALL_LOG"
+    else
+        echo "WARN: Caddy built without dns.providers.powerdns — wildcard SSL will be unavailable." >> "$INSTALL_LOG"
+    fi
     mv "$CADDY_GOT" /usr/bin/caddy
     setcap 'cap_net_bind_service=+ep' /usr/bin/caddy 2>/dev/null || true
     apt-mark hold caddy >/dev/null 2>&1 || true
 else
-    echo "INFO: using stock Caddy (no Coraza WAF). Can be rebuilt later from admin panel." >> "$INSTALL_LOG"
+    echo "INFO: using stock Caddy (no Coraza WAF / no wildcard SSL). Can be rebuilt later from admin panel." >> "$INSTALL_LOG"
 fi
 
 run systemctl enable caddy
