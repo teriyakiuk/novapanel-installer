@@ -197,6 +197,105 @@ step() {
     echo -e "  ${DIM}[${bar}] ${pct}%${NC}   ${BOLD}$1${NC}"
 }
 
+# ── Platform detection ──────────────────────────────
+# Single source of truth for distro-specific behaviour. Anything that differs
+# between Ubuntu and Debian (repos, package names) keys off these vars instead
+# of assuming Ubuntu. Run once so the preflight banner and the install steps
+# below always agree. (Verified the script uses none of os-release's own var
+# names — ID/NAME/VERSION/… — so sourcing it can't clobber anything.)
+detect_platform() {
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        OS_ID="${ID:-}"
+        OS_VER="${VERSION_ID:-}"
+        # VERSION_CODENAME exists on modern Debian/Ubuntu; fall back to
+        # lsb_release, then leave blank (repo setup degrades with a warning).
+        CODENAME="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null || echo '')}"
+        OS_PRETTY="${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-}}"
+        OS_LIKE="${ID_LIKE:-}"
+    else
+        OS_ID=""; OS_VER=""; CODENAME=""; OS_PRETTY="$(uname -s)"; OS_LIKE=""
+    fi
+    ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+    if command -v apt-get >/dev/null 2>&1; then PKG="apt-get"; else PKG=""; fi
+}
+
+# require_supported_os normalises apt-based derivatives (Mint, Pop!_OS, …)
+# onto their Ubuntu/Debian base via ID_LIKE, and stops — with a reason — on
+# anything we can't support, instead of crashing mid-install.
+require_supported_os() {
+    case "$OS_ID" in
+        ubuntu|debian) ;;
+        *)
+            if [[ " ${OS_LIKE} " == *ubuntu* ]]; then
+                warn "Detected ${OS_PRETTY} — treating as Ubuntu-compatible (apt derivative)."
+                OS_ID="ubuntu"
+                [[ -n "${UBUNTU_CODENAME:-}" ]] && CODENAME="$UBUNTU_CODENAME"
+            elif [[ " ${OS_LIKE} " == *debian* ]]; then
+                warn "Detected ${OS_PRETTY} — treating as Debian-compatible (apt derivative)."
+                OS_ID="debian"
+            else
+                err "Unsupported OS: ${OS_PRETTY:-unknown}. NovaPanel requires Ubuntu 22.04/24.04 or Debian 11/12 (or an apt-based derivative)."
+            fi
+            ;;
+    esac
+    [[ -n "$PKG" ]] || err "apt-get not found — the installer only supports apt-based distributions (Debian/Ubuntu)."
+}
+
+# setup_php_repo wires Ondřej Surý's PHP repository for the running distro.
+# Ubuntu uses the Launchpad PPA; Debian uses the equivalent sury.org repo —
+# the PPA ships NO Debian packages, so pointing Debian at it silently leaves
+# every php8.x package unfindable (the original Debian install failure).
+# Returns non-zero on failure so the caller can skip PHP loudly rather than
+# install a broken set.
+setup_php_repo() {
+    if [[ "$OS_ID" == "debian" ]]; then
+        [[ -n "$CODENAME" ]] || { echo "setup_php_repo: no codename for sury.org repo" >> "$INSTALL_LOG"; return 1; }
+        curl -fsSL https://packages.sury.org/php/apt.gpg -o /usr/share/keyrings/sury-php.gpg 2>>"$INSTALL_LOG" || return 1
+        echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ ${CODENAME} main" \
+            > /etc/apt/sources.list.d/sury-php.list 2>>"$INSTALL_LOG" || return 1
+    else
+        add-apt-repository -y ppa:ondrej/php >>"$INSTALL_LOG" 2>&1 || return 1
+    fi
+    apt-get update -qq >>"$INSTALL_LOG" 2>&1 || return 1
+    return 0
+}
+
+# preflight_conflicts refuses to install over another control panel, and warns
+# when a web server already holds 80/443 (NovaPanel runs Caddy there). Printed
+# before the install starts so the operator can bail cleanly.
+preflight_conflicts() {
+    local panels=()
+    [[ -d /usr/local/cpanel ]]                              && panels+=("cPanel")
+    [[ -d /usr/local/psa ]]                                 && panels+=("Plesk")
+    [[ -d /usr/local/CyberCP || -d /usr/local/cyberpanel ]] && panels+=("CyberPanel")
+    [[ -d /usr/local/hestia ]]                              && panels+=("HestiaCP")
+    [[ -d /usr/local/vesta ]]                               && panels+=("VestaCP")
+    [[ -d /etc/webmin ]]                                    && panels+=("Webmin")
+    [[ -d /usr/local/ispconfig ]]                           && panels+=("ISPConfig")
+    [[ -d /etc/openpanel || -d /root/openpanel ]]           && panels+=("OpenPanel")
+
+    if [[ ${#panels[@]} -gt 0 ]]; then
+        echo -e "  ${RED}[ FAIL ]${NC} Conflicting control panel(s) detected: ${panels[*]}"
+        err "NovaPanel can't share a server with another control panel. Use a clean OS install."
+    fi
+
+    local webservers=()
+    command -v apache2 >/dev/null 2>&1 && webservers+=("Apache")
+    command -v nginx   >/dev/null 2>&1 && webservers+=("nginx")
+
+    if [[ ${#webservers[@]} -gt 0 ]]; then
+        echo -e "  ${YELLOW}[ WARN ]${NC} Web server already installed: ${webservers[*]} — NovaPanel uses Caddy on 80/443."
+        info "        Stop/remove ${webservers[*]} if the install can't bind those ports."
+    else
+        echo -e "  ${GREEN}[ OK ]${NC} No conflicting panels or web servers found."
+    fi
+
+    [[ -d /opt/novapanel ]] && info "Existing NovaPanel detected at /opt/novapanel — re-running is safe; your data is preserved."
+    echo ""
+}
+
 # ── Parse Arguments ─────────────────────────────────
 
 while [[ $# -gt 0 ]]; do
@@ -249,9 +348,10 @@ if [[ $EUID -ne 0 ]]; then
     err "This installer must be run as root (use sudo)"
 fi
 
-if ! grep -qi "ubuntu\|debian" /etc/os-release 2>/dev/null; then
-    err "Ubuntu 22.04/24.04 or Debian 11/12 required"
-fi
+# Detect the platform up front and stop cleanly on anything we don't support,
+# rather than assuming Ubuntu and crashing mid-install on Debian/derivatives.
+detect_platform
+require_supported_os
 
 # Check minimum resources
 TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
@@ -276,12 +376,17 @@ echo -e "${CYAN}    ║${NC}                                                    
 echo -e "${CYAN}    ╚═══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${DIM}┌─────────────────────────────────────────────────┐${NC}"
-echo -e "  ${DIM}│${NC}  OS:       $(lsb_release -ds 2>/dev/null || grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
+echo -e "  ${DIM}│${NC}  OS:       ${OS_PRETTY}"
+echo -e "  ${DIM}│${NC}  Arch:     $(uname -m) (${ARCH})"
+echo -e "  ${DIM}│${NC}  Pkg:      ${PKG}"
 echo -e "  ${DIM}│${NC}  Server:   ${BOLD}${SERVER_IP}${NC}"
 echo -e "  ${DIM}│${NC}  Memory:   $(free -h | awk '/^Mem:/{print $2}')  •  Disk: $(df -h / | awk 'NR==2{print $4}') free"
 echo -e "  ${DIM}│${NC}  Kernel:   $(uname -r)"
 echo -e "  ${DIM}└─────────────────────────────────────────────────┘${NC}"
 echo ""
+
+# Refuse to fight another panel; warn about a web server on 80/443.
+preflight_conflicts
 
 # ── Licence notice ──────────────────────────────────
 # NovaPanel is closed-source software distributed under an EULA. The
@@ -730,25 +835,34 @@ if [[ "$INSTALL_PHP" == "yes" ]]; then
     step "PHP 8.3"
     start_spinner "Installing PHP 8.3 + extensions..."
     if ! command -v php8.3 &>/dev/null; then
-        run add-apt-repository -y ppa:ondrej/php || true
-        run apt-get update -qq
-        run apt-get install -y -qq \
-            php8.3-fpm php8.3-cli php8.3-common \
-            php8.3-mysql php8.3-pgsql php8.3-sqlite3 \
-            php8.3-curl php8.3-gd php8.3-mbstring \
-            php8.3-xml php8.3-zip php8.3-bcmath \
-            php8.3-intl php8.3-readline php8.3-opcache \
-            php8.3-redis php8.3-imagick || true
-        sed -i 's/^upload_max_filesize.*/upload_max_filesize = 64M/' /etc/php/8.3/fpm/php.ini 2>/dev/null || true
-        sed -i 's/^post_max_size.*/post_max_size = 64M/' /etc/php/8.3/fpm/php.ini 2>/dev/null || true
-        sed -i 's/^memory_limit.*/memory_limit = 256M/' /etc/php/8.3/fpm/php.ini 2>/dev/null || true
-        run systemctl enable php8.3-fpm
-        run systemctl restart php8.3-fpm
+        # Wire the correct PHP repo for this distro (PPA on Ubuntu, sury.org on
+        # Debian). On failure, skip PHP loudly instead of installing broken
+        # packages — PHP is optional, so this never aborts the whole install.
+        if setup_php_repo; then
+            run apt-get install -y -qq \
+                php8.3-fpm php8.3-cli php8.3-common \
+                php8.3-mysql php8.3-pgsql php8.3-sqlite3 \
+                php8.3-curl php8.3-gd php8.3-mbstring \
+                php8.3-xml php8.3-zip php8.3-bcmath \
+                php8.3-intl php8.3-readline php8.3-opcache \
+                php8.3-redis php8.3-imagick || true
+            sed -i 's/^upload_max_filesize.*/upload_max_filesize = 64M/' /etc/php/8.3/fpm/php.ini 2>/dev/null || true
+            sed -i 's/^post_max_size.*/post_max_size = 64M/' /etc/php/8.3/fpm/php.ini 2>/dev/null || true
+            sed -i 's/^memory_limit.*/memory_limit = 256M/' /etc/php/8.3/fpm/php.ini 2>/dev/null || true
+            run systemctl enable php8.3-fpm
+            run systemctl restart php8.3-fpm
+        else
+            INSTALL_PHP="failed"
+        fi
     fi
-    if ! command -v composer &>/dev/null; then
-        curl -sS https://getcomposer.org/installer 2>/dev/null | php -- --install-dir=/usr/local/bin --filename=composer >> "$INSTALL_LOG" 2>&1 || true
+    if [[ "$INSTALL_PHP" == "failed" ]]; then
+        stop_spinner "PHP repo setup failed for ${OS_ID} ${CODENAME} — PHP skipped (see $INSTALL_LOG). Fix and re-run." fail
+    else
+        if ! command -v composer &>/dev/null && command -v php >/dev/null 2>&1; then
+            curl -sS https://getcomposer.org/installer 2>/dev/null | php -- --install-dir=/usr/local/bin --filename=composer >> "$INSTALL_LOG" 2>&1 || true
+        fi
+        stop_spinner "PHP $(php -v 2>/dev/null | head -1 | awk '{print $2}' || echo '8.3') + Composer"
     fi
-    stop_spinner "PHP $(php -v 2>/dev/null | head -1 | awk '{print $2}' || echo '8.3') + Composer"
 fi
 
 # ── Optional: Python + Gunicorn ────────────────────
