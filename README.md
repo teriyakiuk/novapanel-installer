@@ -9,7 +9,7 @@
   </p>
 </div>
 
-This repository contains the **public, MIT-licensed installer script** that sets up NovaPanel on a fresh Ubuntu server. The panel binary itself is closed-source and distributed via our license-gated CDN; the installer here downloads it, verifies its SHA-256 against a signed release manifest, and wires up the supporting stack (databases, reverse proxy, mail server, DNS).
+This repository contains the **public, MIT-licensed installer script** that sets up NovaPanel on a fresh Ubuntu or Debian server. The panel binary itself is closed-source and distributed via our license-gated CDN; the installer here downloads it, verifies its SHA-256 against a signed release manifest, and wires up the supporting stack (databases, reverse proxy, mail server, DNS).
 
 The installer is open source so you can **audit exactly what runs on your server before piping it to bash**.
 
@@ -17,7 +17,7 @@ The installer is open source so you can **audit exactly what runs on your server
 
 ## Quick start
 
-On a **fresh Ubuntu 22.04 or 24.04** server, as root:
+On a **fresh Ubuntu 22.04 / 24.04 or Debian 11 / 12** server, as root:
 
 ```bash
 curl -fsSL https://license.novapanel.dev/install.sh | sudo bash
@@ -88,7 +88,7 @@ Flags to skip optional pieces if you don't need them:
 
 ## What the installer does
 
-1. **Detects + prepares the OS** — confirms Ubuntu 22.04/24.04, sets `NEEDRESTART_MODE=a` to avoid the Ubuntu 24.04 prompts that hang automated runs.
+1. **Detects + prepares the OS** — identifies the distro (Ubuntu/Debian + apt-based derivatives via `ID_LIKE`), picks the right repos per platform, and sets `NEEDRESTART_MODE=a` to avoid the Ubuntu 24.04 prompts that hang automated runs.
 2. **Installs the database stack** — PostgreSQL 16 (panel's own DB), MariaDB (for customer MySQL databases), and Redis (sessions + cache).
 3. **Installs the reverse proxy** — Caddy 2 with auto-TLS, optionally compiled with the Coraza WAF module via `xcaddy`.
 4. **Installs PHP 8.3 + Composer** — for hosted customer sites.
@@ -111,7 +111,7 @@ The whole run is **idempotent** — re-running on a server that already has Nova
 
 | | Minimum | Recommended |
 |---|---|---|
-| OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS |
+| OS | Ubuntu 22.04 / Debian 11 | Ubuntu 24.04 / Debian 12 |
 | CPU | 2 cores | 4+ cores |
 | RAM | 2 GB | 4+ GB (8 GB if running mail) |
 | Disk | 30 GB | 50+ GB SSD |
