@@ -1,6 +1,6 @@
 <div align="center">
   <h1>NovaPanel Installer</h1>
-  <p><strong>The official installer for <a href="https://novapanel.dev">NovaPanel</a> — a self-hosted hosting control panel for solo developers, agencies, and resellers.</strong></p>
+  <p><strong>The official installer for <a href="https://novapanel.dev">NovaPanel</a> — a free, self-hosted hosting control panel and modern <a href="https://novapanel.dev/cpanel-alternative">cPanel alternative</a> for solo developers, agencies, and resellers.</strong></p>
   <p>
     <a href="https://novapanel.dev"><img alt="Website" src="https://img.shields.io/badge/website-novapanel.dev-3b82f6?style=flat-square"></a>
     <a href="https://novapanel.dev/pricing"><img alt="Free tier" src="https://img.shields.io/badge/free%20tier-forever-10b981?style=flat-square"></a>
@@ -12,6 +12,10 @@
 This repository contains the **public, MIT-licensed installer script** that sets up NovaPanel on a fresh Ubuntu or Debian server. The panel binary itself is closed-source and distributed via our license-gated CDN; the installer here downloads it, verifies its SHA-256 against a signed release manifest, and wires up the supporting stack (databases, reverse proxy, mail server, DNS).
 
 The installer is open source so you can **audit exactly what runs on your server before piping it to bash**.
+
+NovaPanel is a flat-priced, single-binary alternative to the expensive, per-account control panels — **cPanel, Plesk, CyberPanel, HestiaCP**. Free Community tier (never expires), Pro from £4.99/mo per server, dual admin + customer panels, Caddy auto-TLS, PostgreSQL + MariaDB, Postfix mail, PowerDNS, WAF and offsite backups.
+
+**Compare:** [cPanel alternative](https://novapanel.dev/cpanel-alternative) · [vs cPanel](https://novapanel.dev/compare/cpanel) · [vs Plesk](https://novapanel.dev/compare/plesk) · [vs CyberPanel](https://novapanel.dev/compare/cyberpanel) · [vs HestiaCP](https://novapanel.dev/compare/hestiacp) · [all alternatives](https://novapanel.dev/alternatives)
 
 ---
 
