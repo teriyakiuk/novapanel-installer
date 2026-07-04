@@ -600,6 +600,7 @@ run apt-get install -y -qq \
     ca-certificates lsb-release apt-transport-https \
     unzip git jq htop net-tools ufw fail2ban \
     apparmor apparmor-utils python3 python3-pip \
+    python3-systemd \
     acl sudo build-essential || true
 run apt-get install -y -qq python3-bcrypt || pip3 install bcrypt >> "$INSTALL_LOG" 2>&1 || true
 stop_spinner "Base dependencies installed"
@@ -1734,12 +1735,17 @@ cp "${NOVA_DIR}/scripts/logrotate.novapanel" /etc/logrotate.d/novapanel 2>/dev/n
 chmod 0644 /etc/logrotate.d/novapanel 2>/dev/null || true
 
 mkdir -p /etc/fail2ban/jail.d /etc/fail2ban/filter.d 2>/dev/null || true
+# The panel logs to journald (SyslogIdentifier=novapanel), not to a file —
+# /var/log/novapanel/panel.log never exists, and fail2ban refuses to start
+# a jail whose logpath is missing. Read the journal directly instead
+# (requires python3-systemd, installed with the base deps).
 cat > /etc/fail2ban/jail.d/novapanel.conf 2>/dev/null << 'F2BEOF'
 [novapanel-auth]
 enabled = true
 port = 2083,2087
 filter = novapanel-auth
-logpath = /var/log/novapanel/panel.log
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=novapanel.service
 maxretry = 5
 bantime = 12h
 findtime = 300
@@ -1749,6 +1755,15 @@ cat > /etc/fail2ban/filter.d/novapanel-auth.conf 2>/dev/null << 'F2BFILTER'
 failregex = .*"status":401.*"ip":"<HOST>".*
 ignoreregex =
 F2BFILTER
+# Debian 12+ ships journald-only (no rsyslog, no /var/log/auth.log), and
+# the distro package enables the sshd jail by default — with the file
+# backend it finds no log and the WHOLE fail2ban service fails to start.
+# The systemd backend reads sshd from the journal and works on Ubuntu
+# too, so set it unconditionally.
+cat > /etc/fail2ban/jail.d/zz-sshd-systemd.conf 2>/dev/null << 'F2BSSHD'
+[sshd]
+backend = systemd
+F2BSSHD
 run systemctl restart fail2ban || true
 
 cat > /etc/sysctl.d/99-novapanel.conf << 'SYSEOF'
