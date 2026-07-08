@@ -756,6 +756,19 @@ else
 fi
 
 run systemctl enable caddy
+
+# Bound Caddy's shutdown so a restart doesn't hang. With HTTP/3, Caddy's default
+# is an "eternal grace period" on SIGTERM (it waits for QUIC connections to
+# drain), so systemd's stop timeout SIGKILLs it and marks the restart failed
+# even though it comes back up. grace_period in the Caddyfile bounds the drain;
+# a longer TimeoutStopSec gives it room to exit cleanly first.
+mkdir -p /etc/systemd/system/caddy.service.d
+cat > /etc/systemd/system/caddy.service.d/timeout.conf << 'DROPIN'
+[Service]
+TimeoutStopSec=30s
+DROPIN
+run systemctl daemon-reload
+
 stop_spinner "Caddy installed"
 
 # ── MariaDB (Customer Databases) ───────────────────
@@ -1521,6 +1534,7 @@ if [[ "$SETUP_SSL" == "yes" && -n "$SSL_DOMAIN" ]]; then
     order coraza_waf first
     admin localhost:2019
     email ${ADMIN_EMAIL}
+    grace_period 5s
 }
 
 # Panel hostname — HTTPS on all ports
@@ -1599,6 +1613,7 @@ else
 {
     order coraza_waf first
     admin localhost:2019
+    grace_period 5s
 }
 
 http://:2083 {
