@@ -54,26 +54,18 @@ You can also upgrade from Community to Pro any time later via the admin panel's 
 
 ### Non-interactive / automated install
 
-For CI or provisioning automation, skip the interactive prompts:
+For CI or provisioning automation, pass `--quick` plus flags to skip the interactive prompts. Arguments after `bash -s --` are forwarded to the installer:
 
 ```bash
 curl -fsSL https://license.novapanel.dev/install.sh | sudo bash -s -- \
-  --yes \
+  --quick \
   --hostname panel.example.com \
   --admin-email admin@example.com \
-  --admin-password 'a-strong-password' \
+  --admin-pass 'a-strong-password' \
   --key NOVA-xxxx-xxxx-xxxx-xxxx-xxxx
 ```
 
-Or via environment variables:
-
-```bash
-NOVA_HOSTNAME=panel.example.com \
-NOVA_ADMIN_EMAIL=admin@example.com \
-NOVA_ADMIN_PASSWORD='a-strong-password' \
-NOVA_LICENSE_KEY=NOVA-xxxx-xxxx-xxxx-xxxx-xxxx \
-curl -fsSL https://license.novapanel.dev/install.sh | sudo -E bash
-```
+`--key` is optional — omit it for the free Community tier. Other useful flags: `--admin-user <name>` and `--ssl-domain <domain>` (enable Let's Encrypt for the panel host). Run the installer with `--help` to list every flag.
 
 ### Skip optional components
 
@@ -81,12 +73,14 @@ Flags to skip optional pieces if you don't need them:
 
 | Flag | Effect |
 |---|---|
-| `--skip-mail` | Don't install Postfix / Dovecot / OpenDKIM / Roundcube |
-| `--skip-dns` | Don't install PowerDNS |
-| `--skip-ftp` | Don't install vsftpd |
-| `--skip-clamav` | Don't install ClamAV virus scanner |
+| `--no-mail` | Don't install Postfix / Dovecot / OpenDKIM / Roundcube |
+| `--no-dns` | Don't install PowerDNS |
+| `--no-ftp` | Don't install vsftpd |
+| `--no-clamav` | Don't install ClamAV virus scanner |
+| `--no-php` | Don't install PHP 8.3 + Composer |
+| `--no-nodejs` | Don't install Node.js + pm2 |
+| `--no-python` | Don't install Python + Gunicorn |
 | `--skip-waf` | Don't build Caddy with the WAF module (faster install on small VPSes) |
-| `--skip-firewall` | Don't configure UFW (use your provider's firewall instead) |
 
 ---
 
@@ -134,7 +128,7 @@ The whole run is **idempotent** — re-running on a server that already has Nova
 | Sites | 5 | Unlimited | Unlimited |
 | Databases | 5 | Unlimited | Unlimited |
 | Customer accounts | 5 | Unlimited | Unlimited |
-| Admin users (staff) | 1 | 3 | Unlimited |
+| Admin users (staff) | 1 | Unlimited | Unlimited |
 | WAF | — | ✓ | ✓ |
 | Virus scanner | — | ✓ | ✓ |
 | S3 / Backblaze backups | — | ✓ | ✓ |
