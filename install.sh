@@ -980,7 +980,7 @@ if [[ "$INSTALL_MAIL" == "yes" ]]; then
     if ! command -v postfix &>/dev/null; then
         debconf-set-selections <<< "postfix postfix/mailname string ${HOSTNAME_SET}"
         debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
-        run apt-get install -y -qq postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd || true
+        run apt-get install -y -qq postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve || true
         # Ensure directories exist (packages may not create them on all distros)
         mkdir -p /etc/postfix /etc/dovecot/conf.d 2>/dev/null || true
         postconf -e "virtual_mailbox_domains = /etc/postfix/virtual_domains" 2>/dev/null || true
@@ -1052,6 +1052,26 @@ service auth {
   }
 }
 DOVMASTEREOF
+
+        # Sieve on LMTP delivery — powers mailbox autoresponders (vacation).
+        # Matches internal/services/mail/sieve.go (the panel writes the same
+        # drop-in as a self-heal on already-installed servers). ONLY enable it if
+        # the Pigeonhole plugin actually installed — the apt line above is
+        # `|| true`, and referencing a missing sieve plugin makes LMTP fatal on
+        # load and would bounce ALL incoming mail, not just autoresponders.
+        if command -v sievec >/dev/null 2>&1; then
+            cat > /etc/dovecot/conf.d/90-sieve-nova.conf 2>/dev/null << 'DOVSIEVEEOF'
+# Managed by NovaPanel — enables Sieve (mailbox autoresponders) on LMTP delivery.
+protocol lmtp {
+  mail_plugins = $mail_plugins sieve
+}
+plugin {
+  sieve = file:~/sieve;active=~/.dovecot.sieve
+}
+DOVSIEVEEOF
+        else
+            echo "WARN: dovecot-sieve not installed; mailbox autoresponders disabled (panel will retry on boot)" >> "$INSTALL_LOG"
+        fi
 
         touch /etc/dovecot/users 2>/dev/null || true
         chown root:dovecot /etc/dovecot/users >> "$INSTALL_LOG" 2>&1 || true
