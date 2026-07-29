@@ -513,7 +513,7 @@ if [[ "$QUICK_MODE" != "yes" ]]; then
     echo -e "  ${CYAN}│${NC}  Hostname:    ${GREEN}${HOSTNAME_SET}${NC}"
     echo -e "  ${CYAN}│${NC}  SSL:         $([ "$SETUP_SSL" == "yes" ] && echo "${GREEN}${SSL_DOMAIN}${NC}" || echo "${DIM}No${NC}")"
     echo -e "  ${CYAN}│${NC}                                                 ${CYAN}│${NC}"
-    echo -e "  ${CYAN}│${NC}  ${BOLD}Core:${NC}  PostgreSQL 16 • Redis • Caddy • Fail2Ban  ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}  ${BOLD}Core:${NC}  PostgreSQL 17 • Redis • Caddy • Fail2Ban  ${CYAN}│${NC}"
     echo -e "  ${CYAN}│${NC}  ${BOLD}Build:${NC} Go 1.23 • Node.js (build tools)           ${CYAN}│${NC}"
     echo -e "  ${CYAN}│${NC}                                                 ${CYAN}│${NC}"
     svc_icon() { [ "$1" == "yes" ] && echo -e "${GREEN}✓${NC}" || echo -e "${DIM}✗${NC}"; }
@@ -609,15 +609,15 @@ stop_spinner "Base dependencies installed"
 # CDN-edition installer downloads a pre-built binary; no Go needed
 # on customer servers. (bootstrap.sh installs Go for source builds.)
 
-# ── 4. PostgreSQL 16 ───────────────────────────────
+# ── 4. PostgreSQL 17 ───────────────────────────────
 
-step "PostgreSQL 16"
-start_spinner "Installing PostgreSQL 16..."
+step "PostgreSQL 17"
+start_spinner "Installing PostgreSQL 17..."
 if ! command -v psql &>/dev/null; then
     sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
     wget -q -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg 2>/dev/null
     run apt-get update -qq
-    run apt-get install -y -qq postgresql-16 postgresql-client-16
+    run apt-get install -y -qq postgresql-17 postgresql-client-17
 fi
 # Hard check: bail loudly if apt didn't actually install psql. Without
 # this, the bootstrap used to march on, write a broken .env, fail the
@@ -626,14 +626,14 @@ fi
 # really "PostgreSQL never got installed".
 if ! command -v psql >/dev/null 2>&1; then
     stop_spinner "PostgreSQL install failed — psql not found" fail
-    echo -e "${RED}PostgreSQL 16 did not install cleanly. Check $INSTALL_LOG.${NC}" >&2
+    echo -e "${RED}PostgreSQL 17 did not install cleanly. Check $INSTALL_LOG.${NC}" >&2
     echo -e "${YELLOW}Common causes: apt.postgresql.org unreachable, held packages, broken dpkg state.${NC}" >&2
     exit 1
 fi
 if ! id postgres >/dev/null 2>&1; then
     stop_spinner "PostgreSQL install failed — postgres user missing" fail
     echo -e "${RED}postgres system user not created. Rerun:${NC}" >&2
-    echo "  apt-get install --reinstall postgresql-16" >&2
+    echo "  apt-get install --reinstall postgresql-17" >&2
     exit 1
 fi
 # Idempotent user + db setup. Previously these ran unconditionally
@@ -648,7 +648,7 @@ run sudo -u postgres psql -c "ALTER USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
 run sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1 || \
     run sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
 run sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-stop_spinner "PostgreSQL 16 configured"
+stop_spinner "PostgreSQL 17 configured"
 
 # ── 5. Redis ───────────────────────────────────────
 
@@ -834,7 +834,7 @@ if [[ "$INSTALL_NODEJS" == "yes" ]]; then
     step "Node.js 20 + pm2"
     start_spinner "Installing Node.js..."
     if ! command -v node &>/dev/null; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x 2>/dev/null | bash - >> "$INSTALL_LOG" 2>&1
+        curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null | bash - >> "$INSTALL_LOG" 2>&1
         run apt-get install -y -qq nodejs
     fi
     if ! command -v pm2 &>/dev/null; then
