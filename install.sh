@@ -1580,40 +1580,43 @@ ${SSL_DOMAIN}:2087 {
     encode gzip
 }
 
-${SSL_DOMAIN}:8888 {
+${SSL_DOMAIN}:8443 {
     root * /opt/novapanel/web/phpmyadmin
     php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
 }
 
-${SSL_DOMAIN}:8889 {
+${SSL_DOMAIN}:2096 {
     root * /opt/novapanel/web/roundcube
     php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
 }
 
-# IP access — HTTP on all service ports
-http://:2083 {
+# IP / no-domain access — HTTP on the PAIRED ports (cPanel convention: 2082/2086/
+# 2095 + 8080). Kept on SEPARATE ports from the HTTPS ones above so a plain
+# http://IP:PORT request never lands on a TLS listener (which 400s). All are
+# Cloudflare-proxied ports too.
+http://:2082 {
     reverse_proxy localhost:8083 {
         header_up X-Real-IP {remote_host}
     }
     encode gzip
 }
 
-http://:2087 {
+http://:2086 {
     reverse_proxy localhost:8087 {
         header_up X-Real-IP {remote_host}
     }
     encode gzip
 }
 
-http://:8888 {
+http://:8080 {
     root * /opt/novapanel/web/phpmyadmin
     php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
 }
 
-http://:8889 {
+http://:2095 {
     root * /opt/novapanel/web/roundcube
     php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
@@ -1636,8 +1639,25 @@ else
     grace_period 5s
 }
 
+# No SSL: everything is HTTP. Serve the panels/webmail/phpMyAdmin on the paired
+# HTTP ports (2082/2086/2095/8080) AND on 2083/2087/2096/8443 for backward compat
+# — all plain HTTP, no conflict.
+http://:2082 {
+    reverse_proxy localhost:8083 {
+        header_up X-Real-IP {remote_host}
+    }
+    encode gzip
+}
+
 http://:2083 {
     reverse_proxy localhost:8083 {
+        header_up X-Real-IP {remote_host}
+    }
+    encode gzip
+}
+
+http://:2086 {
+    reverse_proxy localhost:8087 {
         header_up X-Real-IP {remote_host}
     }
     encode gzip
@@ -1650,13 +1670,25 @@ http://:2087 {
     encode gzip
 }
 
-http://:8888 {
+http://:8080 {
     root * /opt/novapanel/web/phpmyadmin
     php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
 }
 
-http://:8889 {
+http://:8443 {
+    root * /opt/novapanel/web/phpmyadmin
+    php_fastcgi unix//run/php/php8.3-fpm.sock
+    file_server
+}
+
+http://:2095 {
+    root * /opt/novapanel/web/roundcube
+    php_fastcgi unix//run/php/php8.3-fpm.sock
+    file_server
+}
+
+http://:2096 {
     root * /opt/novapanel/web/roundcube
     php_fastcgi unix//run/php/php8.3-fpm.sock
     file_server
@@ -1674,9 +1706,16 @@ fi
 
 rm -f /etc/caddy/sites/phpmyadmin.caddy /etc/caddy/sites/roundcube.caddy 2>/dev/null || true
 
-# Open ports for phpMyAdmin and Roundcube
-ufw allow 8888/tcp >> "$INSTALL_LOG" 2>&1 || true
-ufw allow 8889/tcp >> "$INSTALL_LOG" 2>&1 || true
+# Service ports (cPanel-convention pairs, all Cloudflare-proxied):
+#   panels 2083/2087 HTTPS + 2082/2086 HTTP; phpMyAdmin 8443/8080; webmail 2096/2095
+# HTTP and HTTPS on SEPARATE ports so http://IP:PORT never hits a TLS listener.
+# 2083/2087 are opened in the firewall step below.
+ufw allow 2082/tcp >> "$INSTALL_LOG" 2>&1 || true
+ufw allow 2086/tcp >> "$INSTALL_LOG" 2>&1 || true
+ufw allow 8443/tcp >> "$INSTALL_LOG" 2>&1 || true
+ufw allow 8080/tcp >> "$INSTALL_LOG" 2>&1 || true
+ufw allow 2096/tcp >> "$INSTALL_LOG" 2>&1 || true
+ufw allow 2095/tcp >> "$INSTALL_LOG" 2>&1 || true
 
 # Systemd service — written inline since CDN-edition has no source tree
 cat > /etc/systemd/system/novapanel.service <<'SVCEOF'
@@ -1951,12 +1990,18 @@ echo ""
 echo -e "  ${CYAN}╭─────────────────────────────────────────────────────╮${NC}"
 echo -e "  ${CYAN}│${NC}  ${BOLD}Panel Access${NC}                                        ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                     ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}  Customer Panel   ${BOLD}${PANEL_URL}:2083${NC}"
-echo -e "  ${CYAN}│${NC}  Admin Panel      ${BOLD}${PANEL_URL}:2087${NC}"
-echo -e "  ${CYAN}│${NC}  phpMyAdmin       ${BOLD}${PANEL_URL}:8888${NC}"
-echo -e "  ${CYAN}│${NC}  Roundcube Mail   ${BOLD}${PANEL_URL}:8889${NC}"
 if [[ "$SETUP_SSL" == "yes" && -n "$SSL_DOMAIN" ]]; then
-echo -e "  ${CYAN}│${NC}  HTTPS Access     ${BOLD}https://${SSL_DOMAIN}${NC} (auto-cert)"
+echo -e "  ${CYAN}│${NC}  Customer Panel   ${BOLD}https://${SSL_DOMAIN}:2083${NC}"
+echo -e "  ${CYAN}│${NC}  Admin Panel      ${BOLD}https://${SSL_DOMAIN}:2087${NC}"
+echo -e "  ${CYAN}│${NC}  phpMyAdmin       ${BOLD}https://${SSL_DOMAIN}:8443${NC}"
+echo -e "  ${CYAN}│${NC}  Roundcube Mail   ${BOLD}https://${SSL_DOMAIN}:2096${NC}"
+echo -e "  ${CYAN}│${NC}  ${DIM}Cert issues once DNS points here. By IP: http://${SERVER_IP}:2086${NC}"
+else
+echo -e "  ${CYAN}│${NC}  Customer Panel   ${BOLD}http://${SERVER_IP}:2082${NC}"
+echo -e "  ${CYAN}│${NC}  Admin Panel      ${BOLD}http://${SERVER_IP}:2086${NC}"
+echo -e "  ${CYAN}│${NC}  phpMyAdmin       ${BOLD}http://${SERVER_IP}:8080${NC}"
+echo -e "  ${CYAN}│${NC}  Roundcube Mail   ${BOLD}http://${SERVER_IP}:2095${NC}"
+echo -e "  ${CYAN}│${NC}  ${DIM}Add a domain in Settings > General to enable HTTPS${NC}"
 fi
 echo -e "  ${CYAN}│${NC}                                                     ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${BOLD}Login Credentials${NC}                                   ${CYAN}│${NC}"
