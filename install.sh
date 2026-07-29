@@ -1218,7 +1218,7 @@ fi
 step "phpMyAdmin"
 start_spinner "Installing phpMyAdmin..."
 if [[ ! -d /opt/novapanel/web/phpmyadmin ]]; then
-    PMA_VERSION="5.2.1"
+    PMA_VERSION="5.2.3"
     run wget -q "https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-all-languages.tar.gz" -O /tmp/phpmyadmin.tar.gz || true
     if [[ -f /tmp/phpmyadmin.tar.gz ]]; then
         mkdir -p /opt/novapanel/web/phpmyadmin
@@ -1245,7 +1245,7 @@ stop_spinner "phpMyAdmin installed"
 step "Roundcube Webmail"
 start_spinner "Installing Roundcube..."
 if [[ ! -d /opt/novapanel/web/roundcube ]]; then
-    RC_VERSION="1.6.9"
+    RC_VERSION="1.6.17"
     run wget -q "https://github.com/roundcube/roundcubemail/releases/download/${RC_VERSION}/roundcubemail-${RC_VERSION}-complete.tar.gz" -O /tmp/roundcube.tar.gz || true
     if [[ -f /tmp/roundcube.tar.gz ]]; then
         mkdir -p /opt/novapanel/web/roundcube
