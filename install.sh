@@ -244,22 +244,36 @@ require_supported_os() {
 }
 
 # setup_php_repo wires Ondřej Surý's PHP repository for the running distro.
-# Ubuntu uses the Launchpad PPA; Debian uses the equivalent sury.org repo —
-# the PPA ships NO Debian packages, so pointing Debian at it silently leaves
-# every php8.x package unfindable (the original Debian install failure).
-# Returns non-zero on failure so the caller can skip PHP loudly rather than
-# install a broken set.
+# packages.sury.org now serves BOTH Debian AND modern Ubuntu (Resolute/26.04 and
+# newer) — Ondřej deprecated the Launchpad PPA, which is now Jammy/Noble-only. So we
+# PREFER sury.org for the running codename, and on Ubuntu fall back to the legacy PPA
+# if sury doesn't (yet) serve that codename. Success is confirmed by php8.3-fpm being
+# resolvable, not by the repo add alone. Returns non-zero so the caller can skip PHP
+# loudly rather than install a broken set. (History: Ubuntu 26.04 "resolute" installs
+# failed here because the PPA has no resolute Release file — sury.org is the fix.)
 setup_php_repo() {
-    if [[ "$OS_ID" == "debian" ]]; then
-        [[ -n "$CODENAME" ]] || { echo "setup_php_repo: no codename for sury.org repo" >> "$INSTALL_LOG"; return 1; }
-        curl -fsSL https://packages.sury.org/php/apt.gpg -o /usr/share/keyrings/sury-php.gpg 2>>"$INSTALL_LOG" || return 1
-        echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ ${CODENAME} main" \
-            > /etc/apt/sources.list.d/sury-php.list 2>>"$INSTALL_LOG" || return 1
-    else
-        add-apt-repository -y ppa:ondrej/php >>"$INSTALL_LOG" 2>&1 || return 1
+    [[ -n "$CODENAME" ]] || { echo "setup_php_repo: no codename for the PHP repo" >> "$INSTALL_LOG"; return 1; }
+
+    # 1) sury.org (canonical for Debian + Ubuntu 26.04+).
+    curl -fsSL https://packages.sury.org/php/apt.gpg -o /usr/share/keyrings/sury-php.gpg 2>>"$INSTALL_LOG" || return 1
+    echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ ${CODENAME} main" \
+        > /etc/apt/sources.list.d/sury-php.list 2>>"$INSTALL_LOG" || return 1
+    apt-get update -qq >>"$INSTALL_LOG" 2>&1
+    if apt-cache show php8.3-fpm >/dev/null 2>&1; then
+        return 0
     fi
-    apt-get update -qq >>"$INSTALL_LOG" 2>&1 || return 1
-    return 0
+
+    # 2) sury.org doesn't serve this codename — on Ubuntu, fall back to the PPA
+    #    (covers Jammy/Noble). On Debian there's no PPA, so fail.
+    echo "setup_php_repo: sury.org has no php8.3 for ${CODENAME}; trying ondrej PPA" >> "$INSTALL_LOG"
+    rm -f /etc/apt/sources.list.d/sury-php.list
+    if [[ "$OS_ID" != "debian" ]]; then
+        command -v add-apt-repository >/dev/null 2>&1 || apt-get install -y -qq software-properties-common >>"$INSTALL_LOG" 2>&1
+        add-apt-repository -y ppa:ondrej/php >>"$INSTALL_LOG" 2>&1 || return 1
+        apt-get update -qq >>"$INSTALL_LOG" 2>&1
+        apt-cache show php8.3-fpm >/dev/null 2>&1 && return 0
+    fi
+    return 1
 }
 
 # preflight_conflicts refuses to install over another control panel, and warns
@@ -474,7 +488,7 @@ if [[ "$QUICK_MODE" != "yes" ]]; then
     echo -e "  ${DIM}accept all, or type ${BOLD}c${NC}${DIM} to customize.${NC}"
     echo ""
     echo -e "  ${GREEN}✓${NC} PHP 8.3 + Composer       ${GREEN}✓${NC} Postfix + Dovecot (Email)"
-    echo -e "  ${GREEN}✓${NC} Node.js 20 + pm2         ${GREEN}✓${NC} vsftpd (FTP Server)"
+    echo -e "  ${GREEN}✓${NC} Node.js 22 + pm2         ${GREEN}✓${NC} vsftpd (FTP Server)"
     echo -e "  ${GREEN}✓${NC} Python 3 + Gunicorn      ${GREEN}✓${NC} PowerDNS (DNS Server)"
     echo -e "  ${GREEN}✓${NC} ClamAV (Virus Scanner)"
     echo ""
@@ -485,7 +499,7 @@ if [[ "$QUICK_MODE" != "yes" ]]; then
         echo ""
         read -p "    PHP 8.3 + Composer           [Y]: " input
         [[ "${input,,}" == "n" ]] && INSTALL_PHP="no"
-        read -p "    Node.js 20 + pm2             [Y]: " input
+        read -p "    Node.js 22 + pm2             [Y]: " input
         [[ "${input,,}" == "n" ]] && INSTALL_NODEJS="no"
         read -p "    Python 3 + Gunicorn          [Y]: " input
         [[ "${input,,}" == "n" ]] && INSTALL_PYTHON="no"
@@ -831,7 +845,7 @@ stop_spinner "MariaDB installed (customer databases)"
 # ── Optional: Node.js ──────────────────────────────
 
 if [[ "$INSTALL_NODEJS" == "yes" ]]; then
-    step "Node.js 20 + pm2"
+    step "Node.js 22 + pm2"
     start_spinner "Installing Node.js..."
     if ! command -v node &>/dev/null; then
         curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null | bash - >> "$INSTALL_LOG" 2>&1
