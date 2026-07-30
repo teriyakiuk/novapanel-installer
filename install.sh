@@ -612,14 +612,28 @@ stop_spinner "System packages updated"
 
 step "Base dependencies"
 start_spinner "Installing curl, git, ufw, fail2ban, build tools..."
-run apt-get install -y -qq \
-    curl wget gnupg2 software-properties-common \
+BASE_PKGS="curl wget gnupg2 software-properties-common \
     ca-certificates lsb-release apt-transport-https \
     unzip git jq htop net-tools ufw fail2ban \
     apparmor apparmor-utils python3 python3-pip \
-    python3-systemd \
-    acl sudo build-essential || true
+    python3-systemd acl sudo build-essential"
+run apt-get install -y -qq $BASE_PKGS || true
+# A single unavailable package makes `apt-get install` abort the WHOLE batch and
+# install NONE of them — on Debian 13 this left jq (and others) missing, crashing
+# license provisioning at 77%. Retry each still-missing package individually so
+# one bad package can't take down the rest.
+for pkg in $BASE_PKGS; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || apt-get install -y -qq "$pkg" >> "$INSTALL_LOG" 2>&1 \
+        || echo "WARN: could not install $pkg" >> "$INSTALL_LOG"
+done
 run apt-get install -y -qq python3-bcrypt || pip3 install bcrypt >> "$INSTALL_LOG" 2>&1 || true
+# jq parses the version manifest + license response — fail early and clearly if it
+# is genuinely unavailable, rather than crashing later mid-provision.
+if ! command -v jq >/dev/null 2>&1; then
+    stop_spinner "jq is required but could not be installed" fail
+    echo "  jq could not be installed. Check ${INSTALL_LOG} and your apt sources, then re-run the installer." >&2
+    exit 1
+fi
 stop_spinner "Base dependencies installed"
 
 # ── 3. Go toolchain — SKIPPED ──────────────────────
