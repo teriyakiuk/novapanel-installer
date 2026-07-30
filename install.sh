@@ -1989,16 +1989,13 @@ if [[ -n "$ADMIN_HASH" ]]; then
     start_spinner "Applying admin credentials..."
     APPLIED=0
     LAST_ERR=""
-    # 90 retries × 1s = 90s wall-clock max. Migrations themselves take
-    # ~1-2s on a normal VPS but we leave generous headroom for slow disks
-    # / first-boot cloud-init contention. Also re-check the panel is
-    # actually running on each iteration so we exit quickly if the
-    # service crashed instead of waiting the full 90s.
+    # 90 retries × 1s = 90s wall-clock max. Migrations run on the first panel
+    # start and create the users table; we poll for it. Do NOT bail just because
+    # the service isn't active on an early iteration — it may still be starting
+    # (systemd "activating"), and bailing early is exactly what made a slow/late
+    # start fall back to the default-seed admin. We wait the full window and only
+    # diagnose the reason afterwards.
     for i in $(seq 1 90); do
-        if ! systemctl is-active --quiet novapanel; then
-            LAST_ERR="novapanel service not running (check: journalctl -u novapanel)"
-            break
-        fi
         EXISTS=$(PGPASSWORD="${DB_PASS}" psql -h localhost -U ${DB_USER} -d ${DB_NAME} -tAc "SELECT to_regclass('public.users')" 2>>"$INSTALL_LOG" || true)
         if [[ "$EXISTS" == "users" ]]; then
             if PGPASSWORD="${DB_PASS}" psql -v ON_ERROR_STOP=1 -h localhost -U ${DB_USER} -d ${DB_NAME} >> "$INSTALL_LOG" 2>&1 <<EOF
@@ -2025,6 +2022,13 @@ EOF
         fi
         sleep 1
     done
+    if [[ $APPLIED -ne 1 && -z "$LAST_ERR" ]]; then
+        if systemctl is-active --quiet novapanel; then
+            LAST_ERR="users table did not appear within 90s — see $INSTALL_LOG"
+        else
+            LAST_ERR="novapanel service is not running (check: journalctl -u novapanel -n 50)"
+        fi
+    fi
     if [[ $APPLIED -eq 1 ]]; then
         stop_spinner "Admin credentials applied (login: $ADMIN_USER / your chosen password)"
     else
