@@ -254,7 +254,10 @@ require_supported_os() {
 setup_php_repo() {
     [[ -n "$CODENAME" ]] || { echo "setup_php_repo: no codename for the PHP repo" >> "$INSTALL_LOG"; return 1; }
 
-    # 1) sury.org (canonical for Debian + Ubuntu 26.04+).
+    # 1) sury.org (canonical for Debian + Ubuntu 26.04+). Clear any stale ondrej PPA
+    #    source a previous (failed) run may have left — on Resolute it has no Release
+    #    file and keeps every later `apt-get update` erroring.
+    rm -f /etc/apt/sources.list.d/*ondrej* 2>/dev/null || true
     curl -fsSL https://packages.sury.org/php/apt.gpg -o /usr/share/keyrings/sury-php.gpg 2>>"$INSTALL_LOG" || return 1
     echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ ${CODENAME} main" \
         > /etc/apt/sources.list.d/sury-php.list 2>>"$INSTALL_LOG" || return 1
