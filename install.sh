@@ -1843,6 +1843,10 @@ chown -R ${NOVA_USER}:${NOVA_USER} ${NOVA_LOG}
 chown -R ${NOVA_USER}:${NOVA_USER} ${NOVA_DATA}
 chown -R ${NOVA_USER}:${NOVA_USER} /srv/sites
 chown ${NOVA_USER}:${NOVA_USER} /etc/caddy/sites
+# The panel rewrites the base Caddyfile in place when provisioning panel HTTPS
+# (admin "Enable HTTPS for the panel") and when un-jamming duplicate site blocks,
+# so it must own it — Caddy still reads it (mode stays 0644).
+chown ${NOVA_USER}:${NOVA_USER} /etc/caddy/Caddyfile 2>/dev/null || true
 chown caddy:caddy /var/log/caddy
 chmod 755 /var/log/caddy ${NOVA_DATA}/tmp
 
@@ -1986,6 +1990,12 @@ ON CONFLICT (username) DO UPDATE SET
     password_hash = EXCLUDED.password_hash,
     is_active = true,
     updated_at = NOW();
+-- Remove the default-seed admin (migration 001 ships admin@novapanel.local with
+-- a fixed password as a fallback). Now that the operator's own admin is applied,
+-- the seed is a known-password backdoor — drop it, unless the operator chose it
+-- as their own account (guarded by the email mismatch).
+DELETE FROM users
+WHERE username = 'admin' AND email = 'admin@novapanel.local' AND email <> '${ADMIN_EMAIL}';
 EOF
             then
                 APPLIED=1
