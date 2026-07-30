@@ -614,7 +614,7 @@ step "Base dependencies"
 start_spinner "Installing curl, git, ufw, fail2ban, build tools..."
 BASE_PKGS="curl wget gnupg2 software-properties-common \
     ca-certificates lsb-release apt-transport-https \
-    unzip git jq htop net-tools ufw fail2ban \
+    unzip git jq htop net-tools ufw fail2ban cron \
     apparmor apparmor-utils python3 python3-pip \
     python3-systemd acl sudo build-essential"
 run apt-get install -y -qq $BASE_PKGS || true
@@ -1389,6 +1389,11 @@ mkdir -p /srv/sites
 mkdir -p /srv/sites/.deploy-keys
 mkdir -p /etc/caddy/sites
 mkdir -p /var/log/caddy
+# The systemd unit lists /var/spool/cron as a mandatory ReadWritePaths entry; if
+# it's missing (Debian minimal doesn't ship cron by default) the service fails at
+# the NAMESPACE step and never starts. The cron package (base deps) creates it,
+# but ensure it here too so the panel can start even if cron isn't present.
+mkdir -p /var/spool/cron
 mkdir -p /opt/novapanel/web/default
 
 # License file lives in /etc/novapanel/license.json — owned by the panel
