@@ -1016,7 +1016,56 @@ if [[ "$INSTALL_MAIL" == "yes" ]]; then
         touch /etc/postfix/vmailbox /etc/postfix/virtual_domains 2>/dev/null || true
         postmap /etc/postfix/vmailbox >> "$INSTALL_LOG" 2>&1 || true
         # Dovecot main config for virtual users
-        cat > /etc/dovecot/conf.d/10-auth-nova.conf 2>/dev/null << 'DOVEOF'
+        # Dovecot 2.4 (Ubuntu 26.04+) rewrote the config format — renamed the auth
+        # and ssl settings, changed the passdb/userdb block syntax, and dropped
+        # mail_location and the plugin{} block. Detect the installed version and
+        # write matching syntax so the same installer works on Dovecot 2.3
+        # (Ubuntu 22.04/24.04, Debian 12) and 2.4 (Ubuntu 26.04+).
+        DOVECOT_VER="$(dovecot --version 2>/dev/null | head -n1 | awk '{print $1}')"
+        [[ -n "$DOVECOT_VER" ]] || DOVECOT_VER="$(doveconf --version 2>/dev/null | head -n1 | awk '{print $1}')"
+        DOVECOT_24=0
+        case "$DOVECOT_VER" in
+            2.4*|2.5*|2.6*|2.7*|2.8*|2.9*|3.*) DOVECOT_24=1 ;;
+        esac
+        echo "Dovecot version detected: ${DOVECOT_VER:-unknown} (2.4-syntax=${DOVECOT_24})" >> "$INSTALL_LOG"
+        if [[ "$DOVECOT_24" == "1" ]]; then
+            # ---- Dovecot 2.4+ syntax ----
+            cat > /etc/dovecot/conf.d/10-auth-nova.conf 2>/dev/null << 'DOVEOF'
+# NovaPanel virtual user auth (Dovecot 2.4 syntax)
+auth_allow_cleartext = yes
+auth_mechanisms = plain login
+
+passdb passwd-file {
+  passwd_file_path = /etc/dovecot/users
+  default_password_scheme = BLF-CRYPT
+}
+
+userdb static {
+  fields {
+    uid = 5000
+    gid = 5000
+    home = /var/mail/vhosts/%{user | domain}/%{user | username}
+  }
+}
+DOVEOF
+
+            cat > /etc/dovecot/conf.d/10-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
+mail_driver = maildir
+mail_path = /var/mail/vhosts/%{user | domain}/%{user | username}/Maildir
+namespace inbox {
+  inbox = yes
+}
+mail_privileged_group = vmail
+DOVMAILEOF
+
+            cat > /etc/dovecot/conf.d/10-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
+ssl = yes
+ssl_server_cert_file = /etc/ssl/certs/ssl-cert-snakeoil.pem
+ssl_server_key_file = /etc/ssl/private/ssl-cert-snakeoil.key
+DOVSSLEOF
+        else
+            # ---- Dovecot 2.3 syntax (Ubuntu 22.04/24.04, Debian 12) ----
+            cat > /etc/dovecot/conf.d/10-auth-nova.conf 2>/dev/null << 'DOVEOF'
 # Disable default auth mechanisms
 !include_try /etc/dovecot/conf.d/auth-system.conf.ext
 
@@ -1035,8 +1084,8 @@ userdb {
 }
 DOVEOF
 
-        # Mail location config
-        cat > /etc/dovecot/conf.d/10-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
+            # Mail location config
+            cat > /etc/dovecot/conf.d/10-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
 mail_location = maildir:/var/mail/vhosts/%d/%n/Maildir
 namespace inbox {
   inbox = yes
@@ -1044,12 +1093,13 @@ namespace inbox {
 mail_privileged_group = vmail
 DOVMAILEOF
 
-        # SSL config for Dovecot
-        cat > /etc/dovecot/conf.d/10-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
+            # SSL config for Dovecot
+            cat > /etc/dovecot/conf.d/10-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
 ssl = yes
 ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
 ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
 DOVSSLEOF
+        fi
 
         # Disable default auth includes that conflict
         sed -i 's/^!include auth-system/#!include auth-system/' /etc/dovecot/conf.d/10-auth.conf 2>/dev/null || true
@@ -1077,7 +1127,16 @@ DOVMASTEREOF
         # `|| true`, and referencing a missing sieve plugin makes LMTP fatal on
         # load and would bounce ALL incoming mail, not just autoresponders.
         if command -v sievec >/dev/null 2>&1; then
-            cat > /etc/dovecot/conf.d/90-sieve-nova.conf 2>/dev/null << 'DOVSIEVEEOF'
+            if [[ "$DOVECOT_24" == "1" ]]; then
+                # Dovecot 2.4 removed the plugin{} block and changed the sieve /
+                # mail_plugins syntax; the 2.3 drop-in below is INVALID on 2.4 and
+                # would make LMTP fatal on load — bouncing ALL mail, not just
+                # autoresponders. Skip it until a verified 2.4 sieve config ships:
+                # autoresponders stay off on 2.4, nothing else breaks.
+                rm -f /etc/dovecot/conf.d/90-sieve-nova.conf 2>/dev/null || true
+                echo "NOTE: Dovecot 2.4 detected; sieve autoresponder drop-in skipped (2.4 sieve config pending)" >> "$INSTALL_LOG"
+            else
+                cat > /etc/dovecot/conf.d/90-sieve-nova.conf 2>/dev/null << 'DOVSIEVEEOF'
 # Managed by NovaPanel — enables Sieve (mailbox autoresponders) on LMTP delivery.
 protocol lmtp {
   mail_plugins = $mail_plugins sieve
@@ -1086,6 +1145,7 @@ plugin {
   sieve = file:~/sieve;active=~/.dovecot.sieve
 }
 DOVSIEVEEOF
+            fi
         else
             echo "WARN: dovecot-sieve not installed; mailbox autoresponders disabled (panel will retry on boot)" >> "$INSTALL_LOG"
         fi
