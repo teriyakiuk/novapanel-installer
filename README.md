@@ -9,7 +9,7 @@
   </p>
 </div>
 
-This repository contains the **public, MIT-licensed installer script** that sets up NovaPanel on a fresh Ubuntu or Debian server. The panel binary itself is closed-source and distributed via our license-gated CDN; the installer here downloads it, verifies its SHA-256 against a signed release manifest, and wires up the supporting stack (databases, reverse proxy, mail server, DNS).
+This repository contains the **public, MIT-licensed installer script** that sets up NovaPanel on a fresh Ubuntu or Debian server. The panel binary itself is closed-source and distributed via our license-gated CDN; the installer here downloads it, verifies its SHA-256 against a signed release manifest, and wires up the supporting stack (databases, reverse proxy, mail server, DNS). It detects the OS version and picks the right upstream repos automatically, so the same command works across every supported release.
 
 The installer is open source so you can **audit exactly what runs on your server before piping it to bash**.
 
@@ -21,7 +21,7 @@ NovaPanel is a flat-priced, single-binary alternative to the expensive, per-acco
 
 ## Quick start
 
-On a **fresh Ubuntu 22.04 / 24.04 or Debian 11 / 12** server, as root:
+On a **fresh Ubuntu 22.04 / 24.04 / 26.04 or Debian 12 / 13** server, as root:
 
 ```bash
 curl -fsSL https://license.novapanel.dev/install.sh | sudo bash
@@ -29,13 +29,13 @@ curl -fsSL https://license.novapanel.dev/install.sh | sudo bash
 
 That's it. The installer takes ~10 minutes on a 2-CPU / 4 GB VPS and auto-issues a free **Community license** bound to your server's machine fingerprint — no signup required.
 
-After install, you can sign in:
+After install, you can sign in. NovaPanel follows the cPanel port convention — each panel has an HTTPS port (used with a domain) and a matching HTTP port (used by IP):
 
-- **Admin panel:** `https://<your-host>:2087` — manage users, sites, packages, license, mail, DNS
-- **Customer panel:** `https://<your-host>:2083` — what your end-users see
+- **Admin panel:** `https://<your-host>:2087` (with a domain) or `http://<your-ip>:2086` (by IP) — manage users, sites, packages, license, mail, DNS
+- **Customer panel:** `https://<your-host>:2083` (with a domain) or `http://<your-ip>:2082` (by IP) — what your end-users see
 
 > [!TIP]
-> Your server needs a **public hostname pointing at it** before install — Caddy provisions Let's Encrypt certs at install time and needs DNS to resolve. Set up an A record like `panel.example.com → your-server-ip` first.
+> You **don't need a domain to install** — install straight onto an IP and get in on the HTTP-by-IP ports (`:2082` / `:2086`). When you're ready to move onto a real domain, point its DNS at the server and click **Enable HTTPS for the panel** in admin → Settings → General; Caddy issues the Let's Encrypt certificate automatically, no reinstall. Or provide `--ssl-domain panel.example.com` at install time (with the DNS A record already in place) to get HTTPS from the start.
 
 ---
 
@@ -86,8 +86,8 @@ Flags to skip optional pieces if you don't need them:
 
 ## What the installer does
 
-1. **Detects + prepares the OS** — identifies the distro (Ubuntu/Debian + apt-based derivatives via `ID_LIKE`), picks the right repos per platform, and sets `NEEDRESTART_MODE=a` to avoid the Ubuntu 24.04 prompts that hang automated runs.
-2. **Installs the database stack** — PostgreSQL 16 (panel's own DB), MariaDB (for customer MySQL databases), and Redis (sessions + cache).
+1. **Detects + prepares the OS** — identifies the distro and version from `/etc/os-release`, wires the matching upstream repos per codename (PostgreSQL PGDG, sury.org for PHP, NodeSource), and sets `NEEDRESTART_MODE=a` to avoid the prompts that hang automated runs.
+2. **Installs the database stack** — PostgreSQL 17 (panel's own DB), MariaDB (for customer MySQL databases), and Redis (sessions + cache).
 3. **Installs the reverse proxy** — Caddy 2 with auto-TLS, optionally compiled with the Coraza WAF module via `xcaddy`.
 4. **Installs PHP 8.3 + Composer** — for hosted customer sites.
 5. **(Optional) installs the mail stack** — Postfix, Dovecot, OpenDKIM, OpenDMARC, Roundcube webmail.
@@ -98,7 +98,7 @@ Flags to skip optional pieces if you don't need them:
 10. **Configures systemd** — `novapanel.service` set up to start on boot.
 11. **Applies database migrations** — embedded in the binary, run on first start.
 12. **Provisions Let's Encrypt** — Caddy obtains certs for the panel hostname automatically.
-13. **Sets up the firewall** — UFW rules for `22, 80, 443, 21, 25, 53, 110, 143, 465, 587, 993, 995, 2083, 2087`.
+13. **Sets up the firewall** — UFW rules for `22, 80, 443, 21, 25, 53, 110, 143, 465, 587, 993, 995` plus the panel/tools ports `2082, 2083, 2086, 2087, 8080, 8443, 2095, 2096` (each service has a paired HTTP + HTTPS port, all Cloudflare-proxyable per the cPanel convention).
 14. **Drops a MOTD** — friendly login banner showing the panel URL, version, license tier.
 
 The whole run is **idempotent** — re-running on a server that already has NovaPanel is safe; it just upgrades the binary and re-applies any missing service config.
@@ -109,7 +109,7 @@ The whole run is **idempotent** — re-running on a server that already has Nova
 
 | | Minimum | Recommended |
 |---|---|---|
-| OS | Ubuntu 22.04 / Debian 11 | Ubuntu 24.04 / Debian 12 |
+| OS | Ubuntu 22.04 / Debian 12 | Ubuntu 24.04 or 26.04 / Debian 13 |
 | CPU | 2 cores | 4+ cores |
 | RAM | 2 GB | 4+ GB (8 GB if running mail) |
 | Disk | 30 GB | 50+ GB SSD |
