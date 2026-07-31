@@ -929,12 +929,19 @@ if [[ "$INSTALL_DNS" == "yes" ]]; then
     step "PowerDNS"
     start_spinner "Installing PowerDNS..."
     if ! command -v pdns_server &>/dev/null; then
+        # PowerDNS binds 0.0.0.0:53, which collides with systemd-resolved's stub
+        # listener on 127.0.0.53:53. `disable` alone is NOT enough — a reboot or
+        # unattended-upgrades can re-enable/re-pull it, and then it grabs :53
+        # before pdns and pdns crash-loops with "Address already in use". MASK it
+        # (symlink the unit to /dev/null) so it can never start again.
         run systemctl stop systemd-resolved || true
         run systemctl disable systemd-resolved || true
-        if [[ -L /etc/resolv.conf ]]; then
-            rm -f /etc/resolv.conf
-            echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
-        fi
+        run systemctl mask systemd-resolved || true
+        # Point the resolver at real upstreams — resolved's stub (127.0.0.53) is
+        # gone now, so a stale symlink/config would leave the box unable to
+        # resolve anything. Rewrite unconditionally (drop any symlink first).
+        rm -f /etc/resolv.conf
+        printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
         run apt-get install -y -qq pdns-server pdns-backend-pgsql || true
         # Ensure config directories exist
         mkdir -p /etc/powerdns/pdns.d 2>/dev/null || true
