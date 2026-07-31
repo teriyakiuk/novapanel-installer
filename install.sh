@@ -1828,6 +1828,19 @@ import /etc/caddy/sites/*.caddy
 CADDYEOF
 fi
 
+# Resilience: the base Caddyfile above declares `order coraza_waf first`, which
+# only stock-plus-Coraza Caddy understands. If the WAF-enabled Caddy couldn't be
+# obtained (the hosted build service was down / the Coraza module lagged a new
+# Caddy release, or --skip-waf was passed), we're on stock Caddy — which fails to
+# start with "coraza_waf is not a registered directive". Strip that global line so
+# Caddy starts and serves every site normally; WAF simply stays unavailable until
+# a WAF-enabled Caddy is installed. Without this a transient upstream build outage
+# leaves the whole box with no web server.
+if [ -z "$CADDY_GOT" ]; then
+    sed -i '/order coraza_waf first/d' /etc/caddy/Caddyfile
+    echo "INFO: stock Caddy in use (no Coraza) — removed 'order coraza_waf first' so Caddy can start; WAF unavailable until a WAF-enabled Caddy is installed." >> "$INSTALL_LOG"
+fi
+
 rm -f /etc/caddy/sites/phpmyadmin.caddy /etc/caddy/sites/roundcube.caddy 2>/dev/null || true
 
 # Service ports (cPanel-convention pairs, all Cloudflare-proxied):
