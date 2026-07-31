@@ -1553,43 +1553,65 @@ ln -sf "${NOVA_DIR}/bin/novapanel" /usr/local/bin/nova
 mkdir -p /etc/update-motd.d
 cat > /etc/update-motd.d/00-novapanel <<'MOTD_EOF'
 #!/bin/sh
-# NovaPanel login banner. Reads version / hostname / license dynamically
-# so the MOTD always reflects current state.
+# NovaPanel dynamic login banner. Regenerated on each login (via update-motd /
+# pam_motd), so system + panel state is always live. No external deps beyond
+# coreutils + systemctl — works on any supported Ubuntu/Debian.
 . /opt/novapanel/config/.env 2>/dev/null || true
-VER=$(cat /opt/novapanel/VERSION 2>/dev/null || echo unknown)
-HOST=$(hostname -f 2>/dev/null || hostname)
-ADMIN_PORT="${NOVA_ADMIN_EXTERNAL_PORT:-2087}"
-CUSTOMER_PORT="${NOVA_CUSTOMER_EXTERNAL_PORT:-2083}"
+VER=$(cat /opt/novapanel/VERSION 2>/dev/null || echo "?")
+HOST=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo server)
+IP=$(hostname -I 2>/dev/null | awk '{print $1}'); [ -n "$IP" ] || IP="your-ip"
 
-# ANSI escapes — kept inline so the script has no external deps.
-B='\033[1m'; D='\033[0m'; C='\033[36m'; G='\033[32m'
+# Real ESC char so colours render inside the heredoc on dash (POSIX sh).
+E=$(printf '\033')
+B="${E}[1m"; D="${E}[0m"; DIM="${E}[2m"; C="${E}[36m"; G="${E}[32m"; R="${E}[31m"
 
-cat <<EOF
+# Live system stats
+UPT=$(uptime -p 2>/dev/null | sed 's/^up //'); [ -n "$UPT" ] || UPT="-"
+LOAD=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)
+CORES=$(nproc 2>/dev/null || echo "?")
+MEM=$(free -m 2>/dev/null | awk '/^Mem:/{p=($2>0)?int($3/$2*100):0; printf "%s / %s MB  %s%%", $3, $2, p}')
+DISK=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s / %s  %s", $3, $2, $5}')
 
-  ${C}╔══════════════════════════════════════════════════════════╗${D}
-  ${C}║${D}  ${B}NovaPanel${D} hosting control panel  ${G}v${VER}${D}  ${C}             ║${D}
-  ${C}╚══════════════════════════════════════════════════════════╝${D}
+# License tier — parsed without jq so the banner never depends on it.
+TIER=$(grep -o '"tier"[[:space:]]*:[[:space:]]*"[^"]*"' /etc/novapanel/license.json 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+[ -n "$TIER" ] || TIER="community"
 
-  Admin panel:    https://${HOST}:${ADMIN_PORT}
-  Customer panel: https://${HOST}:${CUSTOMER_PORT}
+# FQDN → show HTTPS on the hostname; always show the HTTP-by-IP fallback ports.
+case "$HOST" in *.*) FQDN="$HOST" ;; *) FQDN="" ;; esac
 
-  CLI:            ${B}novapanel status${D}        Quick health summary
-                  ${B}novapanel user list${D}     Show all users
-                  ${B}novapanel help${D}          Full command list
+dot() { if systemctl is-active --quiet "$1" 2>/dev/null; then printf "%s*%s %s  " "$G" "$D" "$2"; else printf "%s*%s %s  " "$R" "$D" "$2"; fi; }
 
-  Service:        systemctl status novapanel
-  Logs:           journalctl -u novapanel -f
-
-EOF
+printf '\n'
+printf '  %s%s> NovaPanel%s %sv%s%s   %s%s (%s)%s\n' "$B" "$C" "$D" "$G" "$VER" "$D" "$DIM" "$HOST" "$IP" "$D"
+printf '  %s------------------------------------------------------------%s\n' "$DIM" "$D"
+printf '   %sUptime%s %-26s %sLoad%s  %s\n' "$DIM" "$D" "$UPT" "$DIM" "$D" "$LOAD"
+printf '   %sMemory%s %-26s %sCPU%s   %s cores\n' "$DIM" "$D" "$MEM" "$DIM" "$D" "$CORES"
+printf '   %sDisk /%s %-26s %sTier%s  %s\n' "$DIM" "$D" "$DISK" "$DIM" "$D" "$TIER"
+printf '\n'
+if [ -n "$FQDN" ]; then
+printf '   %sAdmin %s  https://%s:2087   %s.  http://%s:2086%s\n' "$DIM" "$D" "$FQDN" "$DIM" "$IP" "$D"
+printf '   %sClient%s  https://%s:2083   %s.  http://%s:2082%s\n' "$DIM" "$D" "$FQDN" "$DIM" "$IP" "$D"
+else
+printf '   %sAdmin %s  http://%s:2086\n' "$DIM" "$D" "$IP"
+printf '   %sClient%s  http://%s:2082\n' "$DIM" "$D" "$IP"
+fi
+printf '\n'
+printf '   '; dot novapanel Panel; dot caddy Caddy; dot postgresql DB; dot mariadb MySQL; dot pdns DNS; dot dovecot Mail; printf '\n'
+printf '\n'
+printf '   %sCLI%s novapanel status %s.%s user list %s.%s help    %sLogs%s journalctl -u novapanel -f\n' "$DIM" "$D" "$DIM" "$D" "$DIM" "$D" "$DIM" "$D"
+printf '\n'
 MOTD_EOF
 chmod +x /etc/update-motd.d/00-novapanel
 
-# Disable the default Ubuntu motd-news fetch (slow, prints ads) and the
-# legal banner that competes for screen real estate.
-chmod -x /etc/update-motd.d/10-help-text 2>/dev/null || true
-chmod -x /etc/update-motd.d/50-motd-news 2>/dev/null || true
+# Silence the default Ubuntu motd noise so ours is the only banner: the stock
+# "Welcome to Ubuntu" header, the slow ad-fetching news script, the legal help
+# text, and the hardware/ESM upsell lines. (The genuinely useful
+# 90-updates-available "N packages can be updated" line is intentionally kept.)
+for f in 00-header 10-help-text 50-motd-news 88-esm-announce 91-contract-ua-esm-status 91-release-upgrade 85-fwupd 98-fsck-at-reboot; do
+    chmod -x "/etc/update-motd.d/$f" 2>/dev/null || true
+done
 
-# Run once now so the cached banner is fresh for the operator's next login.
+# Render once now so the operator's very next login already shows it.
 run-parts /etc/update-motd.d > /run/motd.dynamic 2>/dev/null || true
 
 stop_spinner "Downloaded + verified (${ACTUAL_SIZE} bytes, sha256=${EXPECTED_SHA:0:12}…)"
@@ -1955,11 +1977,37 @@ vm.swappiness = 10
 SYSEOF
 sysctl -p /etc/sysctl.d/99-novapanel.conf >> "$INSTALL_LOG" 2>&1 || true
 
-# MOTD — CDN edition has no source tree; skip the motd script copy.
-# The panel admin can install a custom MOTD later via the file manager.
-chmod -x /etc/update-motd.d/* 2>/dev/null || true
+# MOTD display wiring. The NovaPanel banner (/etc/update-motd.d/00-novapanel)
+# was already installed + made executable above — do NOT chmod -x the whole
+# dir here (that previously disabled our own banner). pam_motd prints
+# /run/motd.dynamic on login for both Ubuntu and Debian; PrintMotd=no avoids
+# sshd double-printing on top of pam. Blank the static /etc/motd so only our
+# dynamic banner shows.
 sed -i 's/^#\?PrintMotd.*/PrintMotd no/' /etc/ssh/sshd_config 2>/dev/null || true
-echo "" > /etc/motd 2>/dev/null || true
+: > /etc/motd 2>/dev/null || true
+
+# Ubuntu's pam_motd regenerates /run/motd.dynamic from update-motd.d at each
+# login; Debian's does NOT (it only reads /run/motd.dynamic if present). A tiny
+# systemd timer keeps the file fresh on both — safe (no PAM edits, no SSH
+# lockout risk) and harmless on Ubuntu where pam refreshes it live anyway.
+cat > /etc/systemd/system/novapanel-motd.service <<'MOTDSVC_EOF'
+[Unit]
+Description=Regenerate NovaPanel dynamic MOTD
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'run-parts /etc/update-motd.d > /run/motd.dynamic 2>/dev/null'
+MOTDSVC_EOF
+cat > /etc/systemd/system/novapanel-motd.timer <<'MOTDTIMER_EOF'
+[Unit]
+Description=Refresh NovaPanel dynamic MOTD periodically
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=2min
+[Install]
+WantedBy=timers.target
+MOTDTIMER_EOF
+systemctl daemon-reload >> "$INSTALL_LOG" 2>&1 || true
+systemctl enable --now novapanel-motd.timer >> "$INSTALL_LOG" 2>&1 || true
 systemctl reload sshd >> "$INSTALL_LOG" 2>&1 || systemctl reload ssh >> "$INSTALL_LOG" 2>&1 || true
 
 stop_spinner "Firewall + Fail2Ban + MOTD configured"
