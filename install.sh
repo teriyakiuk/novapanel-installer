@@ -1024,6 +1024,10 @@ if [[ "$INSTALL_MAIL" == "yes" ]]; then
         postconf -e "virtual_mailbox_domains = /etc/postfix/virtual_domains" 2>/dev/null || true
         postconf -e "virtual_mailbox_base = /var/mail/vhosts" 2>/dev/null || true
         postconf -e "virtual_mailbox_maps = hash:/etc/postfix/vmailbox" 2>/dev/null || true
+        # virtual_alias_maps powers email forwarders + catch-all (the panel
+        # regenerates /etc/postfix/virtual from its database). Without this line
+        # forwarder rows exist but no mail is ever forwarded.
+        postconf -e "virtual_alias_maps = hash:/etc/postfix/virtual" 2>/dev/null || true
         postconf -e "virtual_uid_maps = static:5000" 2>/dev/null || true
         postconf -e "virtual_gid_maps = static:5000" 2>/dev/null || true
         postconf -e "smtpd_tls_cert_file = /etc/ssl/certs/ssl-cert-snakeoil.pem" 2>/dev/null || true
@@ -1034,8 +1038,9 @@ if [[ "$INSTALL_MAIL" == "yes" ]]; then
         useradd -g vmail -u 5000 -d /var/mail/vhosts -s /usr/sbin/nologin vmail 2>/dev/null || true
         mkdir -p /var/mail/vhosts
         chown -R vmail:vmail /var/mail/vhosts
-        touch /etc/postfix/vmailbox /etc/postfix/virtual_domains 2>/dev/null || true
+        touch /etc/postfix/vmailbox /etc/postfix/virtual_domains /etc/postfix/virtual 2>/dev/null || true
         postmap /etc/postfix/vmailbox >> "$INSTALL_LOG" 2>&1 || true
+        postmap /etc/postfix/virtual >> "$INSTALL_LOG" 2>&1 || true
         # Dovecot main config for virtual users
         # Dovecot 2.4 (Ubuntu 26.04+) rewrote the config format — renamed the auth
         # and ssl settings, changed the passdb/userdb block syntax, and dropped
