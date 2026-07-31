@@ -105,6 +105,29 @@ The whole run is **idempotent** — re-running on a server that already has Nova
 
 ---
 
+## Command-line (over SSH)
+
+The installer symlinks a `novapanel` command into `/usr/local/bin`, so you can inspect and manage the panel over SSH — it reads the panel's DB credentials automatically, just run it as root. Full reference: **[docs/cli](https://novapanel.dev/docs/cli)**.
+
+```bash
+novapanel status                 # counts: users / sites / domains / databases
+novapanel version                # installed version + build commit
+novapanel user list              # all users (email, username, role, status)
+novapanel site list              # all sites (name, runtime, status, owner)
+novapanel domain list            # all domains
+novapanel db list                # all customer databases (name, engine, size, owner)
+
+# user management (customer accounts)
+novapanel user create <email> <username> <password>
+novapanel user password <email> <new-password>
+novapanel user suspend|unsuspend <email>
+novapanel user delete <email>
+```
+
+> Always give `novapanel` a subcommand — running it bare starts a panel server process and conflicts with the systemd service. Control the service itself with `systemctl status|restart novapanel` and `journalctl -u novapanel -f`.
+
+---
+
 ## System requirements
 
 | | Minimum | Recommended |
