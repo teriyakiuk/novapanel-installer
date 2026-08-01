@@ -1256,7 +1256,13 @@ DMARCEOF
 
         run systemctl enable opendkim opendmarc 2>/dev/null || true
         run systemctl restart opendkim opendmarc 2>/dev/null || true
-        run systemctl reload postfix 2>/dev/null || true
+        # OpenDKIM's socket lives in the Postfix chroot, owned opendkim:opendkim
+        # and group-writable. Postfix (user 'postfix') must be in the 'opendkim'
+        # group to connect to it — otherwise cleanup gets "Permission denied" and,
+        # because milter_default_action=accept, sends ALL mail UNSIGNED. Add it,
+        # then RESTART (not reload) postfix so the new group membership takes hold.
+        gpasswd -a postfix opendkim >/dev/null 2>&1 || usermod -aG opendkim postfix 2>/dev/null || true
+        run systemctl restart postfix 2>/dev/null || true
     fi
     stop_spinner "OpenDKIM + OpenDMARC installed"
 
