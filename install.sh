@@ -421,10 +421,12 @@ echo -e "  ${DIM}Privacy policy: ${NC}${CYAN}https://novapanel.dev/privacy${NC}"
 echo -e "  ${DIM}Terms of service: ${NC}${CYAN}https://novapanel.dev/terms${NC}"
 echo -e "  ${DIM}Continuing the installation indicates acceptance of these terms.${NC}"
 echo ""
-if [[ "$QUICK_MODE" != "yes" ]]; then
-    read -t 5 -p "  Press Enter to continue, Ctrl-C to abort (auto-continues in 5s) " _ || true
-    echo ""
-fi
+# No "press Enter to continue" pause here. It trained the user to hit Enter,
+# and any extra/buffered Enter then got consumed by the first prompt below —
+# skipping the admin-email question and landing on username, leaving the install
+# half-configured. The licence text above stands on its own (continuing = accept),
+# and Ctrl-C still aborts at any prompt. Buffered keystrokes are flushed right
+# before the first prompt instead.
 
 # ── Interactive Setup ───────────────────────────────
 
@@ -432,6 +434,10 @@ if [[ "$QUICK_MODE" != "yes" ]]; then
     echo -e "  ${BOLD}${BLUE}STEP 1 of 4${NC} ${BOLD}— Admin Account${NC}"
     echo -e "  ${DIM}Configure the administrator account for the panel${NC}"
     echo ""
+
+    # Drain any keystrokes buffered while the licence was on screen (a stray
+    # Enter here would otherwise be read as an empty answer and skip this prompt).
+    while read -r -t 0.05 _ 2>/dev/null; do :; done
 
     # Admin email
     read -p "  📧 Admin email [$ADMIN_EMAIL]: " input
