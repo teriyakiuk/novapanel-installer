@@ -1280,6 +1280,23 @@ DMARCEOF
         run systemctl enable spamassassin 2>/dev/null || true
         run systemctl restart spamassassin 2>/dev/null || true
     fi
+
+    # spamd is NOT a milter -- Postfix cannot hand it a message -- so scoring
+    # needs the spamass-milter bridge. Installed here (not wired) so enabling
+    # spam filtering from the panel is instant and needs no apt on a live box.
+    # Its wrapper exits 1 unless this user can chgrp the socket to postfix.
+    run apt-get install -y -qq spamass-milter || true
+    gpasswd -a spamass-milter postfix >/dev/null 2>&1 || true
+
+    # clamd and postgrey are not milters either -- clamd speaks its own protocol
+    # and postgrey is a POLICY service -- so mail scanning needs clamav-milter
+    # and greylisting needs postgrey wired into recipient restrictions. Both are
+    # installed here but NOT wired, so enabling either from the panel is instant
+    # and never runs apt on a live server. Greylisting stays off by default: it
+    # delays a sender's first message on purpose.
+    run apt-get install -y -qq clamav-milter postgrey || true
+    systemctl disable --now clamav-milter >/dev/null 2>&1 || true
+    systemctl disable --now postgrey >/dev/null 2>&1 || true
     stop_spinner "SpamAssassin installed"
 fi
 
