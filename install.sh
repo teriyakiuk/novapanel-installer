@@ -1040,6 +1040,25 @@ if [[ "$INSTALL_MAIL" == "yes" ]]; then
         postconf -e "smtpd_tls_key_file = /etc/ssl/private/ssl-cert-snakeoil.key" 2>/dev/null || true
         postconf -e "smtpd_tls_security_level = may" 2>/dev/null || true
         postconf -e "myhostname = ${HOSTNAME_SET}" 2>/dev/null || true
+        # Authenticated submission (587, STARTTLS-required) and smtps (465,
+        # implicit TLS). Without these master.cf services the firewall opened
+        # the ports but nothing listened — no mail client could ever send
+        # authenticated mail through the server. Restricted to SASL-
+        # authenticated senders only, so neither port can relay.
+        postconf -Me "submission/inet=submission inet n - y - - smtpd" 2>/dev/null || true
+        postconf -P "submission/inet/syslog_name=postfix/submission" 2>/dev/null || true
+        postconf -P "submission/inet/smtpd_tls_security_level=encrypt" 2>/dev/null || true
+        postconf -P "submission/inet/smtpd_sasl_auth_enable=yes" 2>/dev/null || true
+        postconf -P "submission/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject" 2>/dev/null || true
+        postconf -P "submission/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject" 2>/dev/null || true
+        postconf -P "submission/inet/milter_macro_daemon_name=ORIGINATING" 2>/dev/null || true
+        postconf -Me "smtps/inet=smtps inet n - y - - smtpd" 2>/dev/null || true
+        postconf -P "smtps/inet/syslog_name=postfix/smtps" 2>/dev/null || true
+        postconf -P "smtps/inet/smtpd_tls_wrappermode=yes" 2>/dev/null || true
+        postconf -P "smtps/inet/smtpd_sasl_auth_enable=yes" 2>/dev/null || true
+        postconf -P "smtps/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject" 2>/dev/null || true
+        postconf -P "smtps/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject" 2>/dev/null || true
+        postconf -P "smtps/inet/milter_macro_daemon_name=ORIGINATING" 2>/dev/null || true
         groupadd -g 5000 vmail 2>/dev/null || true
         useradd -g vmail -u 5000 -d /var/mail/vhosts -s /usr/sbin/nologin vmail 2>/dev/null || true
         mkdir -p /var/mail/vhosts
@@ -1060,9 +1079,18 @@ if [[ "$INSTALL_MAIL" == "yes" ]]; then
             2.4*|2.5*|2.6*|2.7*|2.8*|2.9*|3.*) DOVECOT_24=1 ;;
         esac
         echo "Dovecot version detected: ${DOVECOT_VER:-unknown} (2.4-syntax=${DOVECOT_24})" >> "$INSTALL_LOG"
+        # The nova drop-ins are numbered 99, not 10: they used to be
+        # 10-<thing>-nova.conf, which sorts BEFORE the distro's own
+        # 10-<thing>.conf ('-' < '.'), and Ubuntu 26.04's stock files set
+        # their values EXPLICITLY where older releases left them commented —
+        # so the distro config loaded last and silently reverted ours
+        # (mail_driver fell back to mbox and every inbound message was
+        # invisible over IMAP). A drop-in that must win has to sort last.
+        rm -f /etc/dovecot/conf.d/10-auth-nova.conf /etc/dovecot/conf.d/10-mail-nova.conf \
+              /etc/dovecot/conf.d/10-ssl-nova.conf /etc/dovecot/conf.d/10-master-nova.conf 2>/dev/null || true
         if [[ "$DOVECOT_24" == "1" ]]; then
             # ---- Dovecot 2.4+ syntax ----
-            cat > /etc/dovecot/conf.d/10-auth-nova.conf 2>/dev/null << 'DOVEOF'
+            cat > /etc/dovecot/conf.d/99-auth-nova.conf 2>/dev/null << 'DOVEOF'
 # NovaPanel virtual user auth (Dovecot 2.4 syntax)
 auth_allow_cleartext = yes
 auth_mechanisms = plain login
@@ -1081,23 +1109,27 @@ userdb static {
 }
 DOVEOF
 
-            cat > /etc/dovecot/conf.d/10-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
+            # mail_inbox_path is load-bearing on 2.4: without it Dovecot does
+            # not treat the maildir root as INBOX — it invents a `.INBOX`
+            # subfolder and everything Postfix delivers to new/ is invisible.
+            cat > /etc/dovecot/conf.d/99-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
 mail_driver = maildir
 mail_path = /var/mail/vhosts/%{user | domain}/%{user | username}/Maildir
+mail_inbox_path = /var/mail/vhosts/%{user | domain}/%{user | username}/Maildir
 namespace inbox {
   inbox = yes
 }
 mail_privileged_group = vmail
 DOVMAILEOF
 
-            cat > /etc/dovecot/conf.d/10-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
+            cat > /etc/dovecot/conf.d/99-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
 ssl = yes
 ssl_server_cert_file = /etc/ssl/certs/ssl-cert-snakeoil.pem
 ssl_server_key_file = /etc/ssl/private/ssl-cert-snakeoil.key
 DOVSSLEOF
         else
             # ---- Dovecot 2.3 syntax (Ubuntu 22.04/24.04, Debian 12) ----
-            cat > /etc/dovecot/conf.d/10-auth-nova.conf 2>/dev/null << 'DOVEOF'
+            cat > /etc/dovecot/conf.d/99-auth-nova.conf 2>/dev/null << 'DOVEOF'
 # Disable default auth mechanisms
 !include_try /etc/dovecot/conf.d/auth-system.conf.ext
 
@@ -1117,7 +1149,7 @@ userdb {
 DOVEOF
 
             # Mail location config
-            cat > /etc/dovecot/conf.d/10-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
+            cat > /etc/dovecot/conf.d/99-mail-nova.conf 2>/dev/null << 'DOVMAILEOF'
 mail_location = maildir:/var/mail/vhosts/%d/%n/Maildir
 namespace inbox {
   inbox = yes
@@ -1126,7 +1158,7 @@ mail_privileged_group = vmail
 DOVMAILEOF
 
             # SSL config for Dovecot
-            cat > /etc/dovecot/conf.d/10-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
+            cat > /etc/dovecot/conf.d/99-ssl-nova.conf 2>/dev/null << 'DOVSSLEOF'
 ssl = yes
 ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
 ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
@@ -1142,7 +1174,7 @@ DOVSSLEOF
         postconf -e "smtpd_sasl_auth_enable = yes" 2>/dev/null || true
 
         # Dovecot auth socket for Postfix
-        cat > /etc/dovecot/conf.d/10-master-nova.conf 2>/dev/null << 'DOVMASTEREOF'
+        cat > /etc/dovecot/conf.d/99-master-nova.conf 2>/dev/null << 'DOVMASTEREOF'
 service auth {
   unix_listener /var/spool/postfix/private/auth {
     mode = 0666
@@ -1268,6 +1300,11 @@ DMARCEOF
         # because milter_default_action=accept, sends ALL mail UNSIGNED. Add it,
         # then RESTART (not reload) postfix so the new group membership takes hold.
         gpasswd -a postfix opendkim >/dev/null 2>&1 || usermod -aG opendkim postfix 2>/dev/null || true
+        # Same requirement one socket over: the OpenDMARC socket is
+        # group-writable to 'opendmarc' only, and without this membership every
+        # smtpd connection gets "Permission denied" on the DMARC milter — which
+        # TEMPFAILS mail in both directions the moment the milter is registered.
+        gpasswd -a postfix opendmarc >/dev/null 2>&1 || usermod -aG opendmarc postfix 2>/dev/null || true
         run systemctl restart postfix 2>/dev/null || true
     fi
     stop_spinner "OpenDKIM + OpenDMARC installed"
@@ -1397,10 +1434,8 @@ if [[ ! -d /opt/novapanel/web/roundcube ]]; then
         cat > /opt/novapanel/web/roundcube/config/config.inc.php << RCEOF
 <?php
 \$config['db_dsnw'] = 'pgsql://roundcube:${DB_PASS}@localhost/roundcube';
-\$config['imap_host'] = 'localhost';
-\$config['imap_port'] = 143;
-\$config['smtp_host'] = 'localhost';
-\$config['smtp_port'] = 25;
+\$config['imap_host'] = 'localhost:143';
+\$config['smtp_host'] = 'localhost:25';
 \$config['smtp_user'] = '';
 \$config['smtp_pass'] = '';
 \$config['support_url'] = '';
@@ -1962,6 +1997,7 @@ ufw allow 2087/tcp  >> "$INSTALL_LOG" 2>&1 || true
 [[ "$INSTALL_MAIL" == "yes" ]] && {
     ufw allow 25/tcp  >> "$INSTALL_LOG" 2>&1 || true
     ufw allow 587/tcp >> "$INSTALL_LOG" 2>&1 || true
+    ufw allow 465/tcp >> "$INSTALL_LOG" 2>&1 || true
     ufw allow 993/tcp >> "$INSTALL_LOG" 2>&1 || true
     ufw allow 995/tcp >> "$INSTALL_LOG" 2>&1 || true
 }
