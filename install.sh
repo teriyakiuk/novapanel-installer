@@ -2264,7 +2264,12 @@ echo -e "  ${BOLD}Useful Commands:${NC}"
 echo -e "    ${DIM}systemctl status novapanel${NC}        Service status"
 echo -e "    ${DIM}journalctl -u novapanel -f${NC}        Live logs"
 echo -e "    ${DIM}nova status${NC}                       Panel status"
-echo -e "    ${DIM}nova-update${NC}                       Update to latest"
+# `nova update` — NOT `nova-update`. That name belongs to the source-build
+# installer, which symlinks it to scripts/update.sh (git clone + go build).
+# This edition never installs that script, so the old text named a command
+# that does not exist here. `nova update` downloads the verified binary from
+# the CDN, which is the correct path for a CDN install.
+echo -e "    ${DIM}nova update${NC}                       Update to latest"
 echo ""
 
 # Save credentials to file
