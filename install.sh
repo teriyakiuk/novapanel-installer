@@ -141,7 +141,12 @@ DIM='\033[2m'
 NC='\033[0m'
 
 INSTALL_LOG="/tmp/novapanel-install.log"
-> "$INSTALL_LOG"
+# Created 600, in a subshell so the umask does not leak into the rest of the
+# script. This log lives in /tmp and records every command the installer runs,
+# and some of those carry database passwords -- on a hosting panel, "any local
+# user who can read /tmp" is every customer with shell or FTP access.
+( umask 077; : > "$INSTALL_LOG" )
+chmod 600 "$INSTALL_LOG" 2>/dev/null || true
 
 log()  { echo -e "  ${GREEN}✓${NC} $1"; }
 warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
@@ -181,7 +186,10 @@ stop_spinner() {
 
 # Run a command silently, log output to file
 run() {
-    echo "── $(date '+%H:%M:%S') ── $*" >> "$INSTALL_LOG"
+    # Inline passwords are stripped from the logged command. The file mode is
+    # the real defence; this is so a log pasted into a support request or a bug
+    # report does not carry the database credentials with it.
+    echo "── $(date '+%H:%M:%S') ── $(printf '%s' "$*" | sed -E "s/(PASSWORD|IDENTIFIED BY)[[:space:]]+.[^']*./\1 [redacted]/gI")" >> "$INSTALL_LOG"
     "$@" >> "$INSTALL_LOG" 2>&1
     return $?
 }
@@ -548,7 +556,19 @@ if [[ "$QUICK_MODE" != "yes" ]]; then
     read -p "  Proceed with installation? (Y/n): " input
     [[ "${input,,}" == "n" ]] && echo "  Cancelled." && exit 0
 else
-    [[ -z "$ADMIN_PASS" ]] && ADMIN_PASS="NovaPanel@$(date +%Y)"
+    # Random, not "NovaPanel@$(date +%Y)".
+    #
+    # Every other secret in this script is generated with openssl rand; the
+    # admin password was the one exception, and it is the credential that
+    # guards the panel. A non-interactive install -- unattended provisioning,
+    # or any run where the tty re-exec did not work -- produced a public panel
+    # whose password is the product name and the current year.
+    #
+    # Nothing is lost by randomising it: the summary prints it and it is
+    # written to the credentials file, exactly as before.
+    [[ -z "$ADMIN_PASS" ]] && ADMIN_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 20)
+    [[ -z "$ADMIN_PASS" ]] && ADMIN_PASS="Nova-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' 
+')"
     [[ -z "$HOSTNAME_SET" ]] && HOSTNAME_SET=$(hostname -f 2>/dev/null || hostname)
 fi
 
